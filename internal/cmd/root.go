@@ -13,10 +13,12 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/dotandev/glassbox/internal/config"
 	"github.com/dotandev/glassbox/internal/deeplink"
 	"github.com/dotandev/glassbox/internal/localization"
 	"github.com/dotandev/glassbox/internal/protocolreg"
 	"github.com/dotandev/glassbox/internal/shutdown"
+	"github.com/dotandev/glassbox/internal/telemetry"
 	"github.com/dotandev/glassbox/internal/updater"
 	"github.com/dotandev/glassbox/internal/version"
 	"github.com/spf13/cobra"
@@ -24,12 +26,14 @@ import (
 
 // Global flag variables
 var (
-	TimestampFlag     int64
-	WindowFlag        int64
-	ProfileFlag       bool
-	ProfileFormatFlag string
-	DeepLinkFlag      string
-	VersionFlag       bool
+	TimestampFlag           int64
+	WindowFlag              int64
+	ProfileFlag             bool
+	ProfileFormatFlag       string
+	TelemetryFlag           bool
+	TelemetryAnonymizedFlag bool
+	DeepLinkFlag            string
+	VersionFlag             bool
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -77,6 +81,10 @@ Get started with 'Glassbox debug --help' or visit the documentation.`,
 		// Ping version endpoint asynchronously for next run
 		checkForUpdatesAsync()
 
+		if TelemetryFlag {
+			telemetry.RecordCommandUsage(cmd.Context(), cmd.CommandPath())
+		}
+
 		return nil
 	},
 	SilenceUsage:  true,
@@ -97,6 +105,24 @@ func Execute() error {
 	coordinator := shutdown.NewCoordinator()
 	setShutdownCoordinator(coordinator)
 	defer clearShutdownCoordinator()
+
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = config.DefaultConfig()
+	}
+
+	applyTelemetryConfig(cfg)
+
+	var cleanupTelemetry func()
+	if TelemetryFlag {
+		cleanupTelemetry, _ = telemetry.Init(ctx, telemetry.Config{
+			Enabled:     true,
+			ExporterURL: os.Getenv("GLASSBOX_TELEMETRY_OTLP_URL"),
+			ServiceName: "glassbox",
+			Anonymized:  TelemetryAnonymizedFlag,
+		})
+		defer cleanupTelemetry()
+	}
 
 	return executeWithSignals(ctx, stop, sigCh, coordinator, func(execCtx context.Context) error {
 		return rootCmd.ExecuteContext(execCtx)
@@ -151,6 +177,15 @@ func executeWithSignals(
 	}
 
 	return err
+}
+
+func applyTelemetryConfig(cfg *config.Config) {
+	if !rootCmd.PersistentFlags().Lookup("telemetry").Changed {
+		TelemetryFlag = cfg.Telemetry
+	}
+	if !rootCmd.PersistentFlags().Lookup("telemetry-anonymized").Changed {
+		TelemetryAnonymizedFlag = cfg.TelemetryAnonymized
+	}
 }
 
 // checkForUpdatesAsync runs the update check in a goroutine to not block CLI startup
@@ -255,6 +290,20 @@ func init() {
 		"profile-format",
 		"html",
 		"Flamegraph export format: 'html' (interactive) or 'svg' (raw)",
+	)
+
+	rootCmd.PersistentFlags().BoolVar(
+		&TelemetryFlag,
+		"telemetry",
+		false,
+		"Opt in to anonymized command usage telemetry",
+	)
+
+	rootCmd.PersistentFlags().BoolVar(
+		&TelemetryAnonymizedFlag,
+		"telemetry-anonymized",
+		true,
+		"Send command usage telemetry in anonymized mode",
 	)
 
 	rootCmd.PersistentFlags().StringVar(

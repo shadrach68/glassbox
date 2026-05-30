@@ -51,19 +51,16 @@ Examples:
 				fmt.Printf("Resolved network: %s\n", authNetworkFlag)
 			}
 		}
-		switch rpc.Network(authNetworkFlag) {
-		case rpc.Testnet, rpc.Mainnet, rpc.Futurenet:
-		default:
-			return errors.WrapInvalidNetwork(authNetworkFlag)
-		}
-		return nil
+		return validateNetworkName(authNetworkFlag)
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		txHash := args[0]
 
-		opts := []rpc.ClientOption{
-			rpc.WithNetwork(rpc.Network(authNetworkFlag)),
+		opts, err := networkClientOptions(authNetworkFlag)
+		if err != nil {
+			return errors.WrapValidationError(fmt.Sprintf("failed to build client options: %v", err))
 		}
+		opts = append(opts, rpc.WithToken(os.Getenv("GLASSBOX_RPC_TOKEN")))
 		if authRPCURLFlag != "" {
 			opts = append(opts, rpc.WithHorizonURL(authRPCURLFlag))
 		}

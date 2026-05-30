@@ -23,6 +23,7 @@ import (
 var (
 	auditSignPayload     string
 	auditSignPayloadFile string
+	auditSignValidateOnly bool
 
 	// auditSignSoftwareKey accepts a PKCS#8 PEM Ed25519 private key (literal
 	// PEM text or a file path). Equivalent to GLASSBOX_AUDIT_PRIVATE_KEY_PEM.
@@ -130,6 +131,8 @@ func init() {
 		"PKCS#11 key CKA_LABEL (overrides GLASSBOX_PKCS11_KEY_LABEL)")
 	auditSignCmd.Flags().StringVar(&auditSignPKCS11KeyIDHex, "pkcs11-key-id", "",
 		"PKCS#11 key CKA_ID in hex (overrides GLASSBOX_PKCS11_KEY_ID)")
+	auditSignCmd.Flags().BoolVar(&auditSignValidateOnly, "validate-only", false,
+		"Run PKCS#11 preflight checks without generating a signature")
 
 	rootCmd.AddCommand(auditSignCmd)
 }

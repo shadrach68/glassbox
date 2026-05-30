@@ -36,6 +36,26 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.CachePath == "" {
 		t.Error("expected non-empty CachePath")
 	}
+
+	if cfg.Telemetry {
+		t.Error("expected Telemetry to default to false")
+	}
+
+	if !cfg.TelemetryAnonymized {
+		t.Error("expected TelemetryAnonymized to default to true")
+	}
+}
+
+func TestConfigTelemetryDefaults(t *testing.T) {
+	cfg := NewConfig("https://test.com", NetworkTestnet)
+
+	if cfg.Telemetry {
+		t.Error("expected Telemetry to default to false")
+	}
+
+	if !cfg.TelemetryAnonymized {
+		t.Error("expected TelemetryAnonymized to default to true")
+	}
 }
 
 func TestConfigValidation(t *testing.T) {
@@ -245,16 +265,22 @@ func TestLoadFromEnvironment(t *testing.T) {
 	origRPC := os.Getenv("GLASSBOX_RPC_URL")
 	origNet := os.Getenv("GLASSBOX_NETWORK")
 	origLog := os.Getenv("GLASSBOX_LOG_LEVEL")
+	origTelemetry := os.Getenv("GLASSBOX_TELEMETRY")
+	origTelemetryAnon := os.Getenv("GLASSBOX_TELEMETRY_ANONYMIZED")
 
 	defer func() {
 		os.Setenv("GLASSBOX_RPC_URL", origRPC)
 		os.Setenv("GLASSBOX_NETWORK", origNet)
 		os.Setenv("GLASSBOX_LOG_LEVEL", origLog)
+		os.Setenv("GLASSBOX_TELEMETRY", origTelemetry)
+		os.Setenv("GLASSBOX_TELEMETRY_ANONYMIZED", origTelemetryAnon)
 	}()
 
 	os.Setenv("GLASSBOX_RPC_URL", "https://env.test.com")
 	os.Setenv("GLASSBOX_NETWORK", "public")
 	os.Setenv("GLASSBOX_LOG_LEVEL", "debug")
+	os.Setenv("GLASSBOX_TELEMETRY", "true")
+	os.Setenv("GLASSBOX_TELEMETRY_ANONYMIZED", "false")
 
 	cfg, err := Load()
 	if err != nil {
@@ -271,6 +297,14 @@ func TestLoadFromEnvironment(t *testing.T) {
 
 	if cfg.LogLevel != "debug" {
 		t.Errorf("expected LogLevel from env, got %s", cfg.LogLevel)
+	}
+
+	if !cfg.Telemetry {
+		t.Errorf("expected Telemetry=true from env, got false")
+	}
+
+	if cfg.TelemetryAnonymized {
+		t.Errorf("expected TelemetryAnonymized=false from env, got true")
 	}
 }
 

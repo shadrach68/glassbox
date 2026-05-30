@@ -60,21 +60,27 @@ var validNetworks = map[string]bool{
 
 // Config represents the general configuration for Glassbox
 type Config struct {
-	RpcUrl            string   `json:"rpc_url,omitempty"`
-	RpcUrls           []string `json:"rpc_urls,omitempty"`
+	RpcUrl  string   `json:"rpc_url,omitempty"`
+	RpcUrls []string `json:"rpc_urls,omitempty"`
 	// SorobanRpcUrls holds multiple Soroban RPC endpoints for adaptive failover.
 	// When set, these are used for all Soroban JSON-RPC calls (getLedgerEntries,
 	// simulateTransaction, getHealth) instead of RpcUrl/RpcUrls.
-	SorobanRpcUrls    []string `json:"soroban_rpc_urls,omitempty"`
+	SorobanRpcUrls []string `json:"soroban_rpc_urls,omitempty"`
 	// FailoverStrategy controls how the adaptive selector picks among endpoints.
 	// Valid values: "weighted" (default), "sticky", "round_robin".
-	FailoverStrategy  string   `json:"failover_strategy,omitempty"`
-	Network           Network  `json:"network,omitempty"`
-	NetworkPassphrase string   `json:"network_passphrase,omitempty"`
-	SimulatorPath     string   `json:"simulator_path,omitempty"`
-	LogLevel          string   `json:"log_level,omitempty"`
-	CachePath         string   `json:"cache_path,omitempty"`
-	RPCToken          string   `json:"rpc_token,omitempty"`
+	FailoverStrategy  string  `json:"failover_strategy,omitempty"`
+	Network           Network `json:"network,omitempty"`
+	NetworkPassphrase string  `json:"network_passphrase,omitempty"`
+	SimulatorPath     string  `json:"simulator_path,omitempty"`
+	LogLevel          string  `json:"log_level,omitempty"`
+	CachePath         string  `json:"cache_path,omitempty"`
+	RPCToken          string  `json:"rpc_token,omitempty"`
+	// Telemetry enables optional command usage telemetry.
+	Telemetry bool `json:"telemetry,omitempty"`
+	// TelemetryAnonymized sends telemetry data in anonymized mode when enabled.
+	TelemetryAnonymized bool `json:"telemetry_anonymized,omitempty"`
+	// TelemetryAnonymizedConfigured tracks whether anonymized mode was explicitly set.
+	TelemetryAnonymizedConfigured bool `json:"-"`
 	// MaxCacheSize is the maximum size of the source map cache in bytes.
 	MaxCacheSize int64 `json:"max_cache_size,omitempty"`
 	// CrashReporting enables opt-in anonymous crash reporting.
@@ -108,16 +114,18 @@ var validLogLevels = map[string]bool{
 }
 
 var defaultConfig = &Config{
-	RpcUrl:           endpoints.SorobanTestnet,
-	Network:          NetworkTestnet,
-	SimulatorPath:    "",
-	LogLevel:         "info",
-	CachePath:        joinPath(os.ExpandEnv("$HOME"), ".Glassbox", "cache"),
-	RequestTimeout:   defaultRequestTimeout,
-	MaxCacheSize:     0,
-	MaxTraceDepth:    50,
-	FailureThreshold: defaultFailureThreshold,
-	RetryTimeout:     defaultRetryTimeout,
+	RpcUrl:              endpoints.SorobanTestnet,
+	Network:             NetworkTestnet,
+	SimulatorPath:       "",
+	LogLevel:            "info",
+	CachePath:           joinPath(os.ExpandEnv("$HOME"), ".Glassbox", "cache"),
+	Telemetry:           false,
+	TelemetryAnonymized: true,
+	RequestTimeout:      defaultRequestTimeout,
+	MaxCacheSize:        0,
+	MaxTraceDepth:       50,
+	FailureThreshold:    defaultFailureThreshold,
+	RetryTimeout:        defaultRetryTimeout,
 }
 
 // -- Core Functions --
@@ -142,16 +150,18 @@ func Load() (*Config, error) {
 
 func DefaultConfig() *Config {
 	return &Config{
-		RpcUrl:           defaultConfig.RpcUrl,
-		Network:          defaultConfig.Network,
-		SimulatorPath:    defaultConfig.SimulatorPath,
-		LogLevel:         defaultConfig.LogLevel,
-		CachePath:        defaultConfig.CachePath,
-		RequestTimeout:   defaultConfig.RequestTimeout,
-		MaxCacheSize:     defaultConfig.MaxCacheSize,
-		MaxTraceDepth:    defaultConfig.MaxTraceDepth,
-		FailureThreshold: defaultConfig.FailureThreshold,
-		RetryTimeout:     defaultConfig.RetryTimeout,
+		RpcUrl:              defaultConfig.RpcUrl,
+		Network:             defaultConfig.Network,
+		SimulatorPath:       defaultConfig.SimulatorPath,
+		LogLevel:            defaultConfig.LogLevel,
+		CachePath:           defaultConfig.CachePath,
+		Telemetry:           defaultConfig.Telemetry,
+		TelemetryAnonymized: defaultConfig.TelemetryAnonymized,
+		RequestTimeout:      defaultConfig.RequestTimeout,
+		MaxCacheSize:        defaultConfig.MaxCacheSize,
+		MaxTraceDepth:       defaultConfig.MaxTraceDepth,
+		FailureThreshold:    defaultConfig.FailureThreshold,
+		RetryTimeout:        defaultConfig.RetryTimeout,
 	}
 }
 
@@ -163,16 +173,18 @@ func (c *Config) MergeDefaults() {
 
 func NewConfig(rpcUrl string, network Network) *Config {
 	return &Config{
-		RpcUrl:           rpcUrl,
-		Network:          network,
-		SimulatorPath:    defaultConfig.SimulatorPath,
-		LogLevel:         defaultConfig.LogLevel,
-		CachePath:        defaultConfig.CachePath,
-		RequestTimeout:   defaultConfig.RequestTimeout,
-		MaxCacheSize:     defaultConfig.MaxCacheSize,
-		MaxTraceDepth:    defaultConfig.MaxTraceDepth,
-		FailureThreshold: defaultConfig.FailureThreshold,
-		RetryTimeout:     defaultConfig.RetryTimeout,
+		RpcUrl:              rpcUrl,
+		Network:             network,
+		SimulatorPath:       defaultConfig.SimulatorPath,
+		LogLevel:            defaultConfig.LogLevel,
+		CachePath:           defaultConfig.CachePath,
+		Telemetry:           defaultConfig.Telemetry,
+		TelemetryAnonymized: defaultConfig.TelemetryAnonymized,
+		RequestTimeout:      defaultConfig.RequestTimeout,
+		MaxCacheSize:        defaultConfig.MaxCacheSize,
+		MaxTraceDepth:       defaultConfig.MaxTraceDepth,
+		FailureThreshold:    defaultConfig.FailureThreshold,
+		RetryTimeout:        defaultConfig.RetryTimeout,
 	}
 }
 
@@ -325,6 +337,17 @@ func (envParser) Parse(cfg *Config) error {
 			cfg.MaxTraceDepth = n
 		}
 	}
+	if v := os.Getenv("GLASSBOX_TELEMETRY"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Telemetry = b
+		}
+	}
+	if v := os.Getenv("GLASSBOX_TELEMETRY_ANONYMIZED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.TelemetryAnonymized = b
+			cfg.TelemetryAnonymizedConfigured = true
+		}
+	}
 	if v := os.Getenv("GLASSBOX_CRASH_REPORTING"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.CrashReporting = b
@@ -394,5 +417,8 @@ func (configDefaultsAssigner) Apply(cfg *Config) {
 	}
 	if cfg.RetryTimeout == 0 {
 		cfg.RetryTimeout = defaultRetryTimeout
+	}
+	if cfg.Telemetry && !cfg.TelemetryAnonymizedConfigured {
+		cfg.TelemetryAnonymized = defaultConfig.TelemetryAnonymized
 	}
 }
