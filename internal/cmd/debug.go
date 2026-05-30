@@ -140,10 +140,11 @@ func (d *DebugCommand) runDebug(cmd *cobra.Command, cmdArgs []string) error {
 		}
 	}
 
-	opts := []rpc.ClientOption{
-		rpc.WithNetwork(rpc.Network(networkFlag)),
-		rpc.WithToken(token),
+	opts, err := networkClientOptions(networkFlag)
+	if err != nil {
+		return errors.WrapValidationError(fmt.Sprintf("failed to build client options: %v", err))
 	}
+	opts = append(opts, rpc.WithToken(token))
 	if rpcURLFlag != "" {
 		opts = append(opts, rpc.WithHorizonURL(rpcURLFlag))
 	}

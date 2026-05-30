@@ -201,6 +201,25 @@ func (c *Config) parseTOML(content string) error {
 			c.CrashEndpoint = value
 		case "crash_sentry_dsn":
 			c.CrashSentryDSN = value
+		case "telemetry":
+			switch strings.ToLower(value) {
+			case "true", "1", "yes":
+				c.Telemetry = true
+			case "false", "0", "no":
+				c.Telemetry = false
+			default:
+				return errors.WrapValidationError("telemetry must be a boolean")
+			}
+		case "telemetry_anonymized":
+			switch strings.ToLower(value) {
+			case "true", "1", "yes":
+				c.TelemetryAnonymized = true
+			case "false", "0", "no":
+				c.TelemetryAnonymized = false
+			default:
+				return errors.WrapValidationError("telemetry_anonymized must be a boolean")
+			}
+			c.TelemetryAnonymizedConfigured = true
 		case "request_timeout":
 			n, err := strconv.Atoi(value)
 			if err != nil {

@@ -43,11 +43,7 @@ Example:
   Glassbox dry-run ./tx.xdr --network testnet`,
 	Args: cobra.ExactArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
-		// Validate network flag
-		switch rpc.Network(dryRunNetworkFlag) {
-		default:
-			return errors.WrapInvalidNetwork(dryRunNetworkFlag)
-		}
+		return validateNetworkName(dryRunNetworkFlag)
 	},
 	RunE: runDryRun,
 }

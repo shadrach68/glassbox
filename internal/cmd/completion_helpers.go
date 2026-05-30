@@ -4,6 +4,10 @@
 package cmd
 
 import (
+	"fmt"
+	"sort"
+
+	"github.com/dotandev/glassbox/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -15,7 +19,17 @@ var xdrTypes = []string{"ledger-entry\tLedger entry XDR", "diagnostic-event\tDia
 var reportFormats = []string{"html\tHTML report", "pdf\tPDF report", "json\tJSON report", "html,pdf\tBoth HTML and PDF"}
 
 func completeNetworkFlag(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
-	return networkAliases, cobra.ShellCompDirectiveNoFileComp
+	completions := append([]string{}, networkAliases...)
+
+	networks, err := config.ListCustomNetworks()
+	if err == nil && len(networks) > 0 {
+		sort.Strings(networks)
+		for _, name := range networks {
+			completions = append(completions, fmt.Sprintf("%s\tSaved custom network", name))
+		}
+	}
+
+	return completions, cobra.ShellCompDirectiveNoFileComp
 }
 
 func completeInitNetworkFlag(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {

@@ -115,10 +115,11 @@ func explainFromNetwork(cmd *cobra.Command, txHash string) error {
 		}
 	}
 
-	opts := []rpc.ClientOption{
-		rpc.WithNetwork(rpc.Network(explainNetworkFlag)),
-		rpc.WithToken(token),
+	opts, err := networkClientOptions(explainNetworkFlag)
+	if err != nil {
+		return fmt.Errorf("failed to build client options: %w", err)
 	}
+	opts = append(opts, rpc.WithToken(token))
 	if cfg, err := config.Load(); err == nil {
 		if cfg.FailureThreshold > 0 {
 			opts = append(opts, rpc.WithCircuitBreakerThreshold(cfg.FailureThreshold))

@@ -169,30 +169,31 @@ func runCompare(cmd *cobra.Command, cmdArgs []string) error {
 		}
 	}
 
-	clientOpts := []rpc.ClientOption{
-		rpc.WithNetwork(rpc.Network(cmpNetworkFlag)),
-		rpc.WithToken(token),
+	opts, err := networkClientOptions(cmpNetworkFlag)
+	if err != nil {
+		return errors.WrapValidationError(fmt.Sprintf("failed to build client options: %v", err))
 	}
+	opts = append(opts, rpc.WithToken(token))
 	if cmpRPCURLFlag != "" {
 		urls := splitTrimmed(cmpRPCURLFlag)
-		clientOpts = append(clientOpts, rpc.WithAltURLs(urls))
+		opts = append(opts, rpc.WithAltURLs(urls))
 	} else {
 		if cfg, cfgErr := config.Load(); cfgErr == nil {
 			if len(cfg.RpcUrls) > 0 {
-				clientOpts = append(clientOpts, rpc.WithAltURLs(cfg.RpcUrls))
+				opts = append(opts, rpc.WithAltURLs(cfg.RpcUrls))
 			} else if cfg.RpcUrl != "" {
-				clientOpts = append(clientOpts, rpc.WithHorizonURL(cfg.RpcUrl))
+				opts = append(opts, rpc.WithHorizonURL(cfg.RpcUrl))
 			}
 			if cfg.FailureThreshold > 0 {
-				clientOpts = append(clientOpts, rpc.WithCircuitBreakerThreshold(cfg.FailureThreshold))
+				opts = append(opts, rpc.WithCircuitBreakerThreshold(cfg.FailureThreshold))
 			}
 			if cfg.RetryTimeout > 0 {
-				clientOpts = append(clientOpts, rpc.WithCircuitBreakerTimeout(cfg.RetryTimeout))
+				opts = append(opts, rpc.WithCircuitBreakerTimeout(cfg.RetryTimeout))
 			}
 		}
 	}
 
-	client, err := rpc.NewClient(clientOpts...)
+	client, err := rpc.NewClient(opts...)
 	if err != nil {
 		return errors.WrapValidationError(fmt.Sprintf("failed to create RPC client: %v", err))
 	}

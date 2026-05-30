@@ -25,7 +25,7 @@ var wizardCmd = &cobra.Command{
 			return errors.WrapCliArgumentRequired("account")
 		}
 
-		client, err := rpc.NewClient(rpc.WithNetwork(rpc.Network(network)))
+		client, err := newClientForNetwork(network)
 		if err != nil {
 			return errors.WrapValidationError(err.Error())
 		}

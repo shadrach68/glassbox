@@ -13,10 +13,12 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/dotandev/glassbox/internal/config"
 	"github.com/dotandev/glassbox/internal/deeplink"
 	"github.com/dotandev/glassbox/internal/localization"
 	"github.com/dotandev/glassbox/internal/protocolreg"
 	"github.com/dotandev/glassbox/internal/shutdown"
+	"github.com/dotandev/glassbox/internal/telemetry"
 	"github.com/dotandev/glassbox/internal/updater"
 	"github.com/dotandev/glassbox/internal/version"
 	"github.com/spf13/cobra"
@@ -86,6 +88,10 @@ Get started with 'Glassbox debug --help' or visit the documentation.`,
 		updater.ShowBannerFromCache(version.Version)
 		// Ping version endpoint asynchronously for next run
 		checkForUpdatesAsync()
+
+		if TelemetryFlag {
+			telemetry.RecordCommandUsage(cmd.Context(), cmd.CommandPath())
+		}
 
 		return nil
 	},
@@ -169,6 +175,15 @@ func executeWithSignals(
 	}
 
 	return err
+}
+
+func applyTelemetryConfig(cfg *config.Config) {
+	if !rootCmd.PersistentFlags().Lookup("telemetry").Changed {
+		TelemetryFlag = cfg.Telemetry
+	}
+	if !rootCmd.PersistentFlags().Lookup("telemetry-anonymized").Changed {
+		TelemetryAnonymizedFlag = cfg.TelemetryAnonymized
+	}
 }
 
 // checkForUpdatesAsync runs the update check in a goroutine to not block CLI startup
@@ -285,6 +300,20 @@ func init() {
 		"profile-format",
 		"html",
 		"Flamegraph export format: 'html' (interactive) or 'svg' (raw)",
+	)
+
+	rootCmd.PersistentFlags().BoolVar(
+		&TelemetryFlag,
+		"telemetry",
+		false,
+		"Opt in to anonymized command usage telemetry",
+	)
+
+	rootCmd.PersistentFlags().BoolVar(
+		&TelemetryAnonymizedFlag,
+		"telemetry-anonymized",
+		true,
+		"Send command usage telemetry in anonymized mode",
 	)
 
 	rootCmd.PersistentFlags().StringVar(

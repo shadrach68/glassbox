@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
@@ -25,7 +26,13 @@ type Config struct {
 	Enabled     bool
 	ExporterURL string
 	ServiceName string
+	Anonymized  bool
 }
+
+var (
+	commandTelemetryEnabled    bool
+	commandTelemetryAnonymized bool
+)
 
 // silentSpanExporter wraps a SpanExporter and swallows all export errors so
 // collector outages never block or log. Core SDK paths must not depend on telemetry.
@@ -48,6 +55,9 @@ func (s *silentSpanExporter) Shutdown(ctx context.Context) error {
 // a no-op provider is used instead so the application never blocks or errors.
 // Export failures are swallowed; telemetry fails silently.
 func Init(ctx context.Context, config Config) (func(), error) {
+	commandTelemetryEnabled = config.Enabled
+	commandTelemetryAnonymized = config.Anonymized
+
 	if !config.Enabled {
 		return func() {}, nil
 	}
@@ -93,6 +103,27 @@ func Init(ctx context.Context, config Config) (func(), error) {
 		defer cancel()
 		_ = tp.Shutdown(ctx)
 	}, nil
+}
+
+// RecordCommandUsage emits a lightweight command usage event for anonymized telemetry.
+func RecordCommandUsage(ctx context.Context, command string) {
+	if !commandTelemetryEnabled {
+		return
+	}
+
+	tracer := GetTracer()
+	ctx, span := tracer.Start(ctx, "command_usage")
+	defer span.End()
+
+	if command == "" {
+		command = "unknown"
+	}
+
+	span.SetAttributes(
+		attribute.String("command.name", command),
+		attribute.Bool("telemetry.anonymized", commandTelemetryAnonymized),
+	)
+	span.AddEvent("command.usage")
 }
 
 // GetTracer returns the global tracer instance

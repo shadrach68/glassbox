@@ -23,6 +23,7 @@ import (
 var (
 	auditSignPayload     string
 	auditSignPayloadFile string
+	auditSignValidateOnly bool
 
 	// auditSignSoftwareKey accepts a PKCS#8 PEM Ed25519 private key (literal
 	// PEM text or a file path). Equivalent to GLASSBOX_AUDIT_PRIVATE_KEY_PEM.

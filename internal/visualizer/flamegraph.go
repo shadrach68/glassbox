@@ -273,6 +273,14 @@ const interactiveHTML = `<!DOCTYPE html>
     <div class="svg-container">
       {{SVG_CONTENT}}
     </div>
+    <div class="details-panel" id="detailsPanel">
+      <div class="details-title">Frame Metadata</div>
+      <div class="details-row"><span>Frame</span><span id="detailFrame">Hover over a frame to inspect contract, function, and source details.</span></div>
+      <div class="details-row"><span>Contract</span><span id="detailContract">n/a</span></div>
+      <div class="details-row"><span>Function</span><span id="detailFunction">n/a</span></div>
+      <div class="details-row"><span>Source</span><span id="detailSource">n/a</span></div>
+      <div class="details-row"><span>Hot Path</span><span id="detailHot">n/a</span></div>
+    </div>
     <div class="info">
       <div>
         <span class="kdb">Hover</span> Details &bull; 
@@ -299,6 +307,11 @@ const interactiveHTML = `<!DOCTYPE html>
       let originalViewBox = null;
       let cachedNodes = [];
       let debounceTimer = null;
+      const detailFrame = document.getElementById('detailFrame');
+      const detailContract = document.getElementById('detailContract');
+      const detailFunction = document.getElementById('detailFunction');
+      const detailSource = document.getElementById('detailSource');
+      const detailHot = document.getElementById('detailHot');
 
       // Initialize
       if (svg) {
@@ -308,10 +321,16 @@ const interactiveHTML = `<!DOCTYPE html>
         cachedNodes = Array.from(svg.querySelectorAll('g')).map(g => {
           const rect = g.querySelector('rect');
           const title = g.querySelector('title');
+          const label = title ? title.textContent : '';
+          const metadata = parseMetadata(label);
+          if (rect && metadata.hot) {
+            rect.classList.add('hot-path');
+          }
           return {
             g,
             rect,
-            label: title ? title.textContent.toLowerCase() : '',
+            label: label.toLowerCase(),
+            metadata,
             originalFill: rect ? rect.getAttribute('fill') : null,
             originalStroke: rect ? rect.getAttribute('stroke') : null,
             originalStrokeWidth: rect ? rect.getAttribute('stroke-width') : null
@@ -349,12 +368,15 @@ const interactiveHTML = `<!DOCTYPE html>
 
       function handleMouseOver(e) {
         const target = e.target;
-        const g = target.tagName === 'g' ? target : (target.tagName === 'rect' || target.tagName === 'text' ? target.parentElement : null);
+        const g = target.tagName === 'g' ? target : (target.tagName === 'rect' || target.tagName === 'text' ? target.closest('g') : null);
         if (g && g.tagName === 'g') {
           const title = g.querySelector('title');
           if (title) {
             tooltip.innerHTML = title.textContent.replace(/\n/g, '<br>');
             tooltip.style.display = 'block';
+            updateMetadataPanel(parseMetadata(title.textContent));
+          } else {
+            updateMetadataPanel({ frame: 'n/a', contract: 'n/a', functionName: 'n/a', source: 'n/a', hot: false });
           }
         }
       }
@@ -377,6 +399,54 @@ const interactiveHTML = `<!DOCTYPE html>
           tooltip.style.left = (x + width > windowWidth ? x - width - 20 : x) + 'px';
           tooltip.style.top = (y + height > windowHeight ? y - height - 20 : y) + 'px';
         }
+      }
+
+      function updateMetadataPanel(metadata) {
+        if (!detailFrame || !detailContract || !detailFunction || !detailSource || !detailHot) return;
+        detailFrame.textContent = metadata.frame || 'n/a';
+        detailContract.textContent = metadata.contract || 'n/a';
+        detailFunction.textContent = metadata.functionName || 'n/a';
+        detailSource.textContent = metadata.source || 'n/a';
+        detailHot.textContent = metadata.hot ? 'Yes' : 'No';
+      }
+
+      function parseMetadata(text) {
+        const metadata = {
+          frame: text || 'n/a',
+          contract: 'n/a',
+          functionName: 'n/a',
+          source: 'n/a',
+          hot: false,
+        };
+
+        if (!text) {
+          return metadata;
+        }
+
+        const lower = text.toLowerCase();
+        metadata.hot = /hot_path|hotpath|hot frame|critical|heaviest/.test(lower);
+
+        const contractMatch = text.match(/contract(?:_id)?[:=]\s*([^,;\n]+)/i);
+        if (contractMatch) {
+          metadata.contract = contractMatch[1].trim();
+        }
+
+        const functionMatch = text.match(/function[:=]\s*([^,;\n]+)/i);
+        if (functionMatch) {
+          metadata.functionName = functionMatch[1].trim();
+        }
+
+        const sourceMatch = text.match(/(?:source|file|location)[:=]\s*([^,;\n]+)/i);
+        if (sourceMatch) {
+          metadata.source = sourceMatch[1].trim();
+        } else {
+          const fileLineMatch = text.match(/([^\s@]+\.(?:go|rs|c|cpp|js|ts|wasm)):(\d+)/i);
+          if (fileLineMatch) {
+            metadata.source = fileLineMatch[1] + ':' + fileLineMatch[2];
+          }
+        }
+
+        return metadata;
       }
 
       function handleClick(e) {
