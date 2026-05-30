@@ -1,3 +1,26 @@
+package trace
+
+import (
+    "testing"
+)
+
+func TestExportJSONDeterministic(t *testing.T) {
+    et := NewExecutionTrace("txhash123", 10)
+    et.AddState(ExecutionState{Operation: "op1", EventType: "host_function"})
+    et.AddState(ExecutionState{Operation: "op2", EventType: "contract_call"})
+
+    a, err := et.ExportJSON("1.0")
+    if err != nil {
+        t.Fatalf("ExportJSON failed: %v", err)
+    }
+    b, err := et.ExportJSON("1.0")
+    if err != nil {
+        t.Fatalf("ExportJSON failed second time: %v", err)
+    }
+    if string(a) != string(b) {
+        t.Fatalf("ExportJSON should be deterministic across runs")
+    }
+}
 // Copyright 2026 Glassbox Users
 // SPDX-License-Identifier: Apache-2.0
 
