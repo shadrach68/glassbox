@@ -64,11 +64,12 @@ var (
 	ErrRPCRequestTooLarge   = stdliberrors.New("RPC request payload too large")
 	ErrConfigFailed         = stdliberrors.New("configuration error")
 	ErrNetworkNotFound      = stdliberrors.New("network not found")
-	ErrMissingLedgerKey     = stdliberrors.New("missing ledger key in footprint")
-	ErrWasmInvalid          = stdliberrors.New("invalid WASM file")
-	ErrSpecNotFound         = stdliberrors.New("contract spec not found")
-	ErrShellExit            = stdliberrors.New("exit")
-	ErrRegistryConflict     = stdliberrors.New("protocol registry conflict detected")
+	ErrMissingLedgerKey          = stdliberrors.New("missing ledger key in footprint")
+	ErrWasmInvalid               = stdliberrors.New("invalid WASM file")
+	ErrSpecNotFound              = stdliberrors.New("contract spec not found")
+	ErrShellExit                 = stdliberrors.New("exit")
+	ErrRegistryConflict          = stdliberrors.New("protocol registry conflict detected")
+	ErrLedgerSequenceMismatch    = stdliberrors.New("ledger sequence mismatch")
 )
 
 type LedgerNotFoundError struct {
@@ -353,6 +354,31 @@ func WrapRPCRequestTooLarge(sizeBytes int64, maxSizeBytes int64) error {
 
 func WrapMissingLedgerKey(key string) error {
 	return &MissingLedgerKeyError{Key: key}
+}
+
+// LedgerSequenceMismatchError is returned when a transaction's referenced
+// ledger sequence does not match the sequence in the current replay state.
+type LedgerSequenceMismatchError struct {
+	// TxSequence is the ledger sequence the transaction references.
+	TxSequence uint32
+	// ReplaySequence is the ledger sequence present in the local replay state.
+	ReplaySequence uint32
+}
+
+func (e *LedgerSequenceMismatchError) Error() string {
+	return fmt.Sprintf(
+		"%v: transaction references ledger %d but replay state is at ledger %d",
+		ErrLedgerSequenceMismatch, e.TxSequence, e.ReplaySequence,
+	)
+}
+
+func (e *LedgerSequenceMismatchError) Is(target error) bool {
+	return target == ErrLedgerSequenceMismatch
+}
+
+// WrapLedgerSequenceMismatch wraps a ledger sequence mismatch with both sequence numbers.
+func WrapLedgerSequenceMismatch(txSeq, replaySeq uint32) error {
+	return &LedgerSequenceMismatchError{TxSequence: txSeq, ReplaySequence: replaySeq}
 }
 
 const (
