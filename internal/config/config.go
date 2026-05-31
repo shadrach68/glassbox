@@ -6,20 +6,16 @@ package config
 import (
 	"encoding/json"
 	"os"
-	"path"
 	"path/filepath"
 	"strconv"
 
 	"github.com/dotandev/glassbox/internal/endpoints"
 	"github.com/dotandev/glassbox/internal/errors"
+	"github.com/dotandev/glassbox/internal/pathutil"
 )
 
 func joinPath(parts ...string) string {
-	cleaned := make([]string, 0, len(parts))
-	for _, part := range parts {
-		cleaned = append(cleaned, filepath.ToSlash(part))
-	}
-	return path.Join(cleaned...)
+	return pathutil.Join(parts...)
 }
 
 // -- Interfaces --

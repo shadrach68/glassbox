@@ -88,7 +88,7 @@ func run(execute func() error, stderr io.Writer) int {
 			return cmd.InterruptExitCode
 		}
 		_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
-		return 1
+		return cmd.ExitCodeFor(err)
 	}
-	return 0
+	return cmd.ExitSuccess
 }

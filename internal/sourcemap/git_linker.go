@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/dotandev/glassbox/internal/pathutil"
 )
 
 // GitLinker resolves source file paths relative to a repository root and
@@ -57,13 +59,11 @@ func (g *GitLinker) GitHubURL(absFilePath string) (string, error) {
 		return "", fmt.Errorf("cannot parse remote URL %q: %w", g.remoteURL, err)
 	}
 
-	rel, err := filepath.Rel(g.repoRoot, absFilePath)
+	rel, err := pathutil.RelToSlash(g.repoRoot, absFilePath)
 	if err != nil {
 		return "", fmt.Errorf("cannot make %q relative to repo root %q: %w", absFilePath, g.repoRoot, err)
 	}
 
-	// Normalise to forward slashes for GitHub URLs.
-	rel = filepath.ToSlash(rel)
 	if strings.HasPrefix(rel, "../") {
 		return "", fmt.Errorf("file %q is outside the repository root %q", absFilePath, g.repoRoot)
 	}
@@ -157,12 +157,14 @@ func gitDefaultBranch(repoRoot string) (string, error) {
 
 // NormalizeSourcePath resolves a potentially relative source path to an
 // absolute path anchored at repoRoot, then returns the GitHub URL.
-// This handles DWARF debug info that may embed relative paths.
+// Handles DWARF debug info with embedded relative or Windows-style paths.
 func (g *GitLinker) NormalizeSourcePath(rawPath string) (string, error) {
-	if filepath.IsAbs(rawPath) {
-		return g.GitHubURL(rawPath)
+	// Normalize cross-platform separators before checking absoluteness.
+	normalized := pathutil.Normalize(rawPath)
+	if filepath.IsAbs(normalized) || pathutil.IsWindowsAbs(rawPath) {
+		return g.GitHubURL(normalized)
 	}
 	// Treat relative paths as relative to the repo root.
-	abs := filepath.Join(g.repoRoot, rawPath)
+	abs := pathutil.Join(g.repoRoot, normalized)
 	return g.GitHubURL(abs)
 }

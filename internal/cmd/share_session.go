@@ -1,0 +1,148 @@
+// Copyright 2026 Glassbox Users
+// SPDX-License-Identifier: Apache-2.0
+
+package cmd
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/dotandev/glassbox/internal/errors"
+	"github.com/dotandev/glassbox/internal/session"
+	"github.com/spf13/cobra"
+)
+
+var sessionShareCmd = &cobra.Command{
+	Use:   "share [session-id]",
+	Short: "Export a debug session as a portable archive",
+	Long: `Package a saved debug session into a self-contained archive file (.gbx).
+
+The archive contains all replay inputs, simulation results, and metadata
+required to reproduce the session on another machine. Load the archive with
+'Glassbox session load <archive>'.
+
+If no session-id is provided, the currently active session is archived.`,
+	Example: `  # Export the active session
+  Glassbox session share
+
+  # Export a specific saved session
+  Glassbox session share abc123 --output ./debug-session.gbx`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
+
+		outputFlag, _ := cmd.Flags().GetString("output")
+
+		var data *session.Data
+
+		if len(args) == 0 {
+			// Use the active session.
+			data = GetCurrentSession()
+			if data == nil {
+				return errors.WrapSimulationLogicError(
+					"no active session to share. Run 'Glassbox debug <tx-hash>' first or specify a session-id",
+				)
+			}
+		} else {
+			// Load a saved session by ID.
+			store, err := session.NewStore()
+			if err != nil {
+				return errors.WrapValidationError(fmt.Sprintf("failed to open session store: %v", err))
+			}
+			defer store.Close()
+
+			data, err = resolveSessionInput(ctx, store, args[0])
+			if err != nil {
+				return err
+			}
+		}
+
+		// Determine the output path.
+		dest := outputFlag
+		if dest == "" {
+			safeName := strings.NewReplacer("/", "_", "\\", "_", ":", "_").Replace(data.ID)
+			dest = fmt.Sprintf("glassbox-session-%s-%s.gbx",
+				safeName, time.Now().UTC().Format("20060102-150405"))
+		}
+		// Ensure parent directory exists.
+		if dir := filepath.Dir(dest); dir != "." && dir != "" {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return errors.WrapValidationError(fmt.Sprintf("failed to create output directory: %v", err))
+			}
+		}
+
+		if err := session.ExportArchive(data, dest); err != nil {
+			return fmt.Errorf("failed to export session archive: %w", err)
+		}
+
+		info, _ := os.Stat(dest)
+		size := int64(0)
+		if info != nil {
+			size = info.Size()
+		}
+
+		fmt.Printf("Session exported: %s\n", dest)
+		fmt.Printf("  Session ID:  %s\n", data.ID)
+		fmt.Printf("  Transaction: %s\n", data.TxHash)
+		fmt.Printf("  Network:     %s\n", data.Network)
+		fmt.Printf("  Archive:     %s (%d bytes)\n", dest, size)
+		fmt.Printf("\nTo load on another machine:\n")
+		fmt.Printf("  Glassbox session load %s\n", dest)
+
+		return nil
+	},
+}
+
+var sessionLoadCmd = &cobra.Command{
+	Use:   "load <archive>",
+	Short: "Load a shared debug session archive",
+	Long: `Restore a session from a .gbx archive created by 'Glassbox session share'.
+
+The restored session is set as the active session and can be saved persistently
+with 'Glassbox session save'. Source mappings and simulation results bundled in
+the archive are available immediately without re-fetching from the network.`,
+	Example: `  # Load an exported session archive
+  Glassbox session load ./glassbox-session-abc123.gbx
+
+  # Save the loaded session for later use
+  Glassbox session load ./glassbox-session-abc123.gbx
+  Glassbox session save --id restored-session`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		archivePath := args[0]
+
+		data, err := session.ImportArchive(archivePath)
+		if err != nil {
+			return fmt.Errorf("failed to load session archive: %w", err)
+		}
+
+		// Mark as active session.
+		data.Status = "resumed"
+		data.LastAccessAt = time.Now()
+		SetCurrentSession(data)
+
+		fmt.Printf("Session loaded from archive: %s\n", archivePath)
+		fmt.Printf("  Session ID:  %s\n", data.ID)
+		fmt.Printf("  Transaction: %s\n", data.TxHash)
+		fmt.Printf("  Network:     %s\n", data.Network)
+		fmt.Printf("  Created:     %s\n", data.CreatedAt.Format(time.RFC3339))
+
+		if data.SimResponseJSON != "" {
+			fmt.Printf("\nSimulation results are available. Run 'Glassbox trace' to view.\n")
+		}
+		fmt.Printf("\nTo persist this session:\n")
+		fmt.Printf("  Glassbox session save --id <name>\n")
+
+		return nil
+	},
+}
+
+func init() {
+	sessionShareCmd.Flags().StringP("output", "o", "", "Output archive path (default: auto-generated .gbx file)")
+
+	sessionCmd.AddCommand(sessionShareCmd)
+	sessionCmd.AddCommand(sessionLoadCmd)
+}
