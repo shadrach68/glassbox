@@ -4,11 +4,15 @@
 package localization
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
 )
+
+// jsonUnmarshal is an alias so tests can substitute it.
+var jsonUnmarshal = json.Unmarshal
 
 type Language string
 
@@ -136,6 +140,34 @@ func (l *Localizer) TranslateForLang(lang Language, key string, args ...interfac
 	return template
 }
 
+// LoadFromFile reads a JSON translation bundle from the given file path and
+// registers the messages for the specified language. The file must contain a
+// flat JSON object mapping message keys to translated strings, e.g.:
+//
+//	{"cli.debug.short": "Debug a failed transaction", ...}
+func (l *Localizer) LoadFromFile(lang Language, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("localization: failed to read translation file %s: %w", path, err)
+	}
+
+	var messages map[string]string
+	if err := jsonUnmarshal(data, &messages); err != nil {
+		return fmt.Errorf("localization: failed to parse translation file %s: %w", path, err)
+	}
+
+	return l.RegisterMessages(lang, messages)
+}
+
+// SupportedLanguages returns the list of language codes recognised by the localizer.
+func SupportedLanguages() []Language {
+	langs := make([]Language, 0, len(supported))
+	for l := range supported {
+		langs = append(langs, l)
+	}
+	return langs
+}
+
 var globalLocalizer = New()
 
 func Get(key string) string {
@@ -150,6 +182,21 @@ func SetLanguage(lang Language) error {
 	return globalLocalizer.SetLanguage(lang)
 }
 
+func GetLanguage() Language {
+	return globalLocalizer.GetLanguage()
+}
+
 func RegisterMessages(lang Language, messages map[string]string) error {
 	return globalLocalizer.RegisterMessages(lang, messages)
+}
+
+// LoadFromFile loads a JSON translation bundle into the global localizer.
+func LoadFromFile(lang Language, path string) error {
+	return globalLocalizer.LoadFromFile(lang, path)
+}
+
+// DetectLanguage returns the language derived from the GLASSBOX_LANG environment
+// variable, falling back to English for unrecognised values.
+func DetectLanguage() Language {
+	return detectLanguage()
 }

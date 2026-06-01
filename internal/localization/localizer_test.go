@@ -4,6 +4,8 @@
 package localization
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -116,5 +118,138 @@ func TestMissingKeyFallback(t *testing.T) {
 	result := loc.Get("nonexistent.key")
 	if result != "nonexistent.key" {
 		t.Errorf("expected key as fallback, got: %s", result)
+	}
+}
+
+func TestLoadFromFile_ValidJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "en.json")
+	content := `{"greeting": "Hello from file", "farewell": "Goodbye from file"}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loc := New()
+	if err := loc.LoadFromFile(English, path); err != nil {
+		t.Fatalf("LoadFromFile failed: %v", err)
+	}
+
+	if got := loc.Get("greeting"); got != "Hello from file" {
+		t.Errorf("expected 'Hello from file', got %q", got)
+	}
+	if got := loc.Get("farewell"); got != "Goodbye from file" {
+		t.Errorf("expected 'Goodbye from file', got %q", got)
+	}
+}
+
+func TestLoadFromFile_FallbackAfterLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "es.json")
+	content := `{"greeting": "Hola"}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loc := New()
+	_ = loc.RegisterMessages(English, map[string]string{"greeting": "Hello", "farewell": "Bye"})
+	if err := loc.LoadFromFile(Spanish, path); err != nil {
+		t.Fatalf("LoadFromFile failed: %v", err)
+	}
+	_ = loc.SetLanguage(Spanish)
+
+	if got := loc.Get("greeting"); got != "Hola" {
+		t.Errorf("expected Spanish 'Hola', got %q", got)
+	}
+	// 'farewell' only exists in English — should fall back
+	if got := loc.Get("farewell"); got != "Bye" {
+		t.Errorf("expected English fallback 'Bye', got %q", got)
+	}
+}
+
+func TestLoadFromFile_MissingFile(t *testing.T) {
+	loc := New()
+	err := loc.LoadFromFile(English, "/nonexistent/path/en.json")
+	if err == nil {
+		t.Error("expected error for missing file")
+	}
+}
+
+func TestLoadFromFile_InvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(path, []byte("{not valid json"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loc := New()
+	err := loc.LoadFromFile(English, path)
+	if err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
+func TestLoadFromFile_UnsupportedLanguage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fr.json")
+	if err := os.WriteFile(path, []byte(`{"key": "val"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loc := New()
+	err := loc.LoadFromFile(Language("fr"), path)
+	if err == nil {
+		t.Error("expected error for unsupported language")
+	}
+}
+
+func TestSupportedLanguages(t *testing.T) {
+	langs := SupportedLanguages()
+	if len(langs) == 0 {
+		t.Error("expected at least one supported language")
+	}
+	found := false
+	for _, l := range langs {
+		if l == English {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected English in supported languages")
+	}
+}
+
+func TestDetectLanguagePublic(t *testing.T) {
+	t.Setenv("GLASSBOX_LANG", "es")
+	lang := DetectLanguage()
+	if lang != Spanish {
+		t.Errorf("expected Spanish, got %s", lang)
+	}
+}
+
+func TestGetLanguageGlobal(t *testing.T) {
+	// Reset global state after the test.
+	orig := globalLocalizer.GetLanguage()
+	t.Cleanup(func() { _ = globalLocalizer.SetLanguage(orig) })
+
+	_ = SetLanguage(Chinese)
+	if got := GetLanguage(); got != Chinese {
+		t.Errorf("expected Chinese, got %s", got)
+	}
+}
+
+func TestGlobalLoadFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "en_extra.json")
+	content := `{"test.file_load": "loaded from file"}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := LoadFromFile(English, path); err != nil {
+		t.Fatalf("global LoadFromFile failed: %v", err)
+	}
+
+	if got := Get("test.file_load"); got != "loaded from file" {
+		t.Errorf("expected 'loaded from file', got %q", got)
 	}
 }
