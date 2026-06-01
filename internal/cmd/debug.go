@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dotandev/glassbox/internal/abi"
 	"github.com/dotandev/glassbox/internal/config"
 	"github.com/dotandev/glassbox/internal/decenstorage"
 	"github.com/dotandev/glassbox/internal/decoder"
@@ -970,6 +971,13 @@ func runLocalWasmReplay() error {
 	fmt.Printf("WASM File: %s\n", wasmPath)
 	fmt.Printf("Arguments: %v\n", args)
 	fmt.Println()
+
+	// Analyze WASM binary size and emit warnings for large contracts.
+	if sizeAnalysis, sizeErr := abi.AnalyzeWasmSize(wasmBytes); sizeErr == nil {
+		if msg := abi.FormatWasmSizeWarnings(sizeAnalysis); msg != "" {
+			fmt.Fprintf(os.Stderr, "%s\n", msg)
+		}
+	}
 
 	// Check for LTO in the project that produced the WASM
 	checkLTOWarning(wasmPath)
