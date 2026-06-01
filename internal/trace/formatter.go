@@ -6,6 +6,8 @@ package trace
 import (
 	"fmt"
 	"strings"
+
+	"github.com/dotandev/glassbox/internal/abi"
 )
 
 const (
@@ -97,6 +99,20 @@ func FormatTrace(t *ExecutionTrace, opts FormatOptions) string {
 		if s.GitHubLink != "" {
 			writeMetaLine(&b, cont, "link", s.GitHubLink, textWidth)
 		}
+		if s.ContractMetadata != nil && s.ContractMetadata.HasMetadata() {
+			metaStr := s.ContractMetadata.String()
+			for _, line := range strings.Split(strings.TrimSpace(metaStr), "\n") {
+				if line == "" {
+					continue
+				}
+				parts := strings.SplitN(line, ": ", 2)
+				if len(parts) == 2 {
+					writeMetaLine(&b, cont, parts[0], parts[1], textWidth)
+				} else {
+					writeMetaLine(&b, cont, "meta", line, textWidth)
+				}
+			}
+		}
 	}
 
 	return b.String()
@@ -135,6 +151,22 @@ func renderNode(b *strings.Builder, n *TraceNode, depth, lw, iw int, isLast bool
 			loc = fmt.Sprintf("%s:%d:%d", n.SourceRef.File, n.SourceRef.Line, n.SourceRef.Column)
 		}
 		writeMetaLine(b, cont, "source", loc, textWidth)
+	}
+
+	if n.ContractMetadata != nil && n.ContractMetadata.HasMetadata() {
+		metaStr := n.ContractMetadata.String()
+		// Split the string into individual meta lines
+		for _, line := range strings.Split(strings.TrimSpace(metaStr), "\n") {
+			if line == "" {
+				continue
+			}
+			parts := strings.SplitN(line, ": ", 2)
+			if len(parts) == 2 {
+				writeMetaLine(b, cont, parts[0], parts[1], textWidth)
+			} else {
+				writeMetaLine(b, cont, "meta", line, textWidth)
+			}
+		}
 	}
 
 	for i, child := range n.Children {

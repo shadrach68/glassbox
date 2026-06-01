@@ -11,22 +11,25 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/dotandev/glassbox/internal/abi"
 )
 
 type exportState struct {
-	Step       int
-	Summary    string
-	Operation  string
-	EventType  string
-	Contract   string
-	Function   string
-	Args       string
-	Return     string
-	Error      string
-	SourceFile string
-	SourceLine int
-	GitHubLink string
-	Details    []string
+	Step              int
+	Summary           string
+	Operation         string
+	EventType         string
+	Contract          string
+	Function          string
+	ContractMetadata  *abi.ContractMetadata
+	Args              string
+	Return            string
+	Error             string
+	SourceFile        string
+	SourceLine        int
+	GitHubLink        string
+	Details           []string
 }
 
 type exportData struct {
@@ -254,19 +257,20 @@ func buildExportStates(trace *ExecutionTrace) []exportState {
 		}
 
 		states = append(states, exportState{
-			Step:       s.Step,
-			Summary:    summary,
-			Operation:  s.Operation,
-			EventType:  s.EventType,
-			Contract:   s.ContractID,
-			Function:   s.Function,
-			Args:       fmt.Sprintf("%v", s.Arguments),
-			Return:     fmt.Sprintf("%v", s.ReturnValue),
-			Error:      s.Error,
-			SourceFile: s.SourceFile,
-			SourceLine: s.SourceLine,
-			GitHubLink: s.GitHubLink,
-			Details:    details,
+			Step:              s.Step,
+			Summary:           summary,
+			Operation:         s.Operation,
+			EventType:         s.EventType,
+			Contract:          s.ContractID,
+			Function:          s.Function,
+			ContractMetadata:  s.ContractMetadata,
+			Args:              fmt.Sprintf("%v", s.Arguments),
+			Return:            fmt.Sprintf("%v", s.ReturnValue),
+			Error:             s.Error,
+			SourceFile:        s.SourceFile,
+			SourceLine:        s.SourceLine,
+			GitHubLink:        s.GitHubLink,
+			Details:           details,
 		})
 	}
 	return states

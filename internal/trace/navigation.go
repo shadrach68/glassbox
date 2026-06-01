@@ -10,28 +10,30 @@ import (
 	"sort"
 	"time"
 
+	"github.com/dotandev/glassbox/internal/abi"
 	"github.com/dotandev/glassbox/internal/simulator"
 )
 
 // ExecutionState represents the state at a specific point in execution
 type ExecutionState struct {
-	Step            int                    `json:"step"`
-	Timestamp       time.Time              `json:"timestamp"`
-	Operation       string                 `json:"operation"`
-	EventType       string                 `json:"event_type,omitempty"` // trap, contract_call, host_function, auth, or empty for inferred
-	ContractID      string                 `json:"contract_id,omitempty"`
-	Function        string                 `json:"function,omitempty"`
-	Arguments       []interface{}          `json:"arguments,omitempty"`
-	RawArguments    []string               `json:"raw_arguments,omitempty"`
-	ReturnValue     interface{}            `json:"return_value,omitempty"`
-	RawReturnValue  string                 `json:"raw_return_value,omitempty"`
-	Error           string                 `json:"error,omitempty"`
-	HostState       map[string]interface{} `json:"host_state,omitempty"`
-	Memory          map[string]interface{} `json:"memory,omitempty"`
-	WasmInstruction string                 `json:"wasm_instruction,omitempty"`
-	SourceFile      string                 `json:"source_file,omitempty"`
-	SourceLine      int                    `json:"source_line,omitempty"`
-	GitHubLink      string                 `json:"github_link,omitempty"`
+	Step             int                     `json:"step"`
+	Timestamp        time.Time               `json:"timestamp"`
+	Operation        string                  `json:"operation"`
+	EventType        string                  `json:"event_type,omitempty"` // trap, contract_call, host_function, auth, or empty for inferred
+	ContractID       string                  `json:"contract_id,omitempty"`
+	Function         string                  `json:"function,omitempty"`
+	ContractMetadata *abi.ContractMetadata   `json:"contract_metadata,omitempty"`
+	Arguments        []interface{}           `json:"arguments,omitempty"`
+	RawArguments     []string                `json:"raw_arguments,omitempty"`
+	ReturnValue      interface{}             `json:"return_value,omitempty"`
+	RawReturnValue   string                  `json:"raw_return_value,omitempty"`
+	Error            string                  `json:"error,omitempty"`
+	HostState        map[string]interface{}  `json:"host_state,omitempty"`
+	Memory           map[string]interface{}  `json:"memory,omitempty"`
+	WasmInstruction  string                  `json:"wasm_instruction,omitempty"`
+	SourceFile       string                  `json:"source_file,omitempty"`
+	SourceLine       int                     `json:"source_line,omitempty"`
+	GitHubLink       string                  `json:"github_link,omitempty"`
 }
 
 // DefaultSnapshotInterval is the number of steps between state snapshots.
@@ -144,6 +146,7 @@ func (t *ExecutionTrace) reconstructStateUpTo(step int) (*ExecutionState, error)
 			reconstructedState.Operation = state.Operation
 			reconstructedState.ContractID = state.ContractID
 			reconstructedState.Function = state.Function
+			reconstructedState.ContractMetadata = state.ContractMetadata
 			reconstructedState.Arguments = state.Arguments
 			reconstructedState.RawArguments = state.RawArguments
 			reconstructedState.ReturnValue = state.ReturnValue
@@ -250,6 +253,7 @@ func (t *ExecutionTrace) ReconstructStateAt(step int) (*ExecutionState, error) {
 			reconstructedState.Operation = state.Operation
 			reconstructedState.ContractID = state.ContractID
 			reconstructedState.Function = state.Function
+			reconstructedState.ContractMetadata = state.ContractMetadata
 			reconstructedState.Arguments = state.Arguments
 			reconstructedState.RawArguments = state.RawArguments
 			reconstructedState.ReturnValue = state.ReturnValue
@@ -299,23 +303,24 @@ func (t *ExecutionTrace) ExportJSON(schemaVersion string, generatedAt time.Time)
 	}
 
 	type stateExport struct {
-		Step           int         `json:"step"`
-		Timestamp      string      `json:"timestamp"`
-		Operation      string      `json:"operation"`
-		EventType      string      `json:"event_type,omitempty"`
-		ContractID     string      `json:"contract_id,omitempty"`
-		Function       string      `json:"function,omitempty"`
-		Arguments      []interface{} `json:"arguments,omitempty"`
-		RawArguments   []string    `json:"raw_arguments,omitempty"`
-		ReturnValue    interface{} `json:"return_value,omitempty"`
-		RawReturnValue string      `json:"raw_return_value,omitempty"`
-		Error          string      `json:"error,omitempty"`
-		HostState      []kv        `json:"host_state,omitempty"`
-		Memory         []kv        `json:"memory,omitempty"`
-		WasmInstruction string     `json:"wasm_instruction,omitempty"`
-		SourceFile     string      `json:"source_file,omitempty"`
-		SourceLine     int         `json:"source_line,omitempty"`
-		GitHubLink     string      `json:"github_link,omitempty"`
+		Step             int                    `json:"step"`
+		Timestamp        string                 `json:"timestamp"`
+		Operation        string                 `json:"operation"`
+		EventType        string                 `json:"event_type,omitempty"`
+		ContractID       string                 `json:"contract_id,omitempty"`
+		Function         string                 `json:"function,omitempty"`
+		ContractMetadata *abi.ContractMetadata  `json:"contract_metadata,omitempty"`
+		Arguments        []interface{}          `json:"arguments,omitempty"`
+		RawArguments     []string               `json:"raw_arguments,omitempty"`
+		ReturnValue      interface{}            `json:"return_value,omitempty"`
+		RawReturnValue   string                 `json:"raw_return_value,omitempty"`
+		Error            string                 `json:"error,omitempty"`
+		HostState        []kv                   `json:"host_state,omitempty"`
+		Memory           []kv                   `json:"memory,omitempty"`
+		WasmInstruction  string                 `json:"wasm_instruction,omitempty"`
+		SourceFile       string                 `json:"source_file,omitempty"`
+		SourceLine       int                    `json:"source_line,omitempty"`
+		GitHubLink       string                 `json:"github_link,omitempty"`
 	}
 
 	type snapshotExport struct {
@@ -355,23 +360,24 @@ func (t *ExecutionTrace) ExportJSON(schemaVersion string, generatedAt time.Time)
 	var states []stateExport
 	for _, s := range t.States {
 		states = append(states, stateExport{
-			Step: s.Step,
-			Timestamp: norm(s.Timestamp),
-			Operation: s.Operation,
-			EventType: s.EventType,
-			ContractID: s.ContractID,
-			Function: s.Function,
-			Arguments: s.Arguments,
-			RawArguments: s.RawArguments,
-			ReturnValue: s.ReturnValue,
-			RawReturnValue: s.RawReturnValue,
-			Error: s.Error,
-			HostState: toKVS(s.HostState),
-			Memory: toKVS(s.Memory),
-			WasmInstruction: s.WasmInstruction,
-			SourceFile: s.SourceFile,
-			SourceLine: s.SourceLine,
-			GitHubLink: s.GitHubLink,
+			Step:              s.Step,
+			Timestamp:         norm(s.Timestamp),
+			Operation:         s.Operation,
+			EventType:         s.EventType,
+			ContractID:        s.ContractID,
+			Function:          s.Function,
+			ContractMetadata:  s.ContractMetadata,
+			Arguments:         s.Arguments,
+			RawArguments:      s.RawArguments,
+			ReturnValue:       s.ReturnValue,
+			RawReturnValue:    s.RawReturnValue,
+			Error:             s.Error,
+			HostState:         toKVS(s.HostState),
+			Memory:            toKVS(s.Memory),
+			WasmInstruction:   s.WasmInstruction,
+			SourceFile:        s.SourceFile,
+			SourceLine:        s.SourceLine,
+			GitHubLink:        s.GitHubLink,
 		})
 	}
 
