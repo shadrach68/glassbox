@@ -4,6 +4,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -63,6 +64,13 @@ func loadFromEnv(cfg *Config) error { //nolint:unused // Reserved for future con
 		cfg.RequestTimeout = n
 	}
 
+	if v := os.Getenv("GLASSBOX_EXTERNAL_SOURCE_MAP"); v != "" {
+		var repos []ExternalSourceRepo
+		if err := json.Unmarshal([]byte(v), &repos); err == nil {
+			cfg.ExternalSourceRepos = repos
+		}
+	}
+
 	if v := os.Getenv("GLASSBOX_MAX_TRACE_DEPTH"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil {
@@ -98,31 +106,54 @@ func splitAndTrim(s string) []string {
 	return parts
 }
 
-// loadFromFile searches for a config file in the following order and loads the
-// first one found. Precedence (highest first):
-//  1. .glassbox.toml          (current directory, XDG-style)
-//  2. .Glassbox.toml          (current directory, legacy)
-//  3. ~/.glassbox/config.toml (home directory, XDG-style)
-//  4. ~/.Glassbox.toml        (home directory, legacy)
-//  5. /etc/Glassbox/config.toml (system-wide)
+// loadFromFile loads configuration from all discovered config files in
+// ascending priority order. Values from higher-priority files override those
+// from lower-priority ones; each file that is found is merged into c.
+//
+// Resolution order (lowest → highest priority):
+//  1. /etc/Glassbox/config.toml         — system-wide defaults
+//  2. ~/.Glassbox.toml                  — home directory, legacy name
+//  3. ~/.glassbox/config.toml           — home directory, XDG-style
+//  4. .Glassbox.toml                    — project directory, legacy name
+//  5. .glassbox.toml                    — project directory, XDG-style
+//
+// After file loading, environment variables (applied by envParser) override
+// all file-sourced values, and CLI flags override everything.
+//
+// ActiveConfigFile returns the path of the highest-priority file that was
+// successfully loaded, or an empty string when no file was found.
 func (c *Config) loadFromFile() error {
 	activeConfigFile = "" // reset on each load
 
 	home := os.ExpandEnv("$HOME")
 
-	paths := []string{
-		".glassbox.toml",
-		".Glassbox.toml",
-		filepath.Join(home, ".glassbox", "config.toml"),
-		filepath.Join(home, ".Glassbox.toml"),
+	// Sources listed in ascending priority order; later entries override earlier.
+	sources := []string{
 		"/etc/Glassbox/config.toml",
+		filepath.Join(home, ".Glassbox.toml"),
+		filepath.Join(home, ".glassbox", "config.toml"),
+		".Glassbox.toml",
+		".glassbox.toml",
 	}
 
-	for _, path := range paths {
-		if err := c.loadTOML(path); err == nil {
-			activeConfigFile = path
-			return nil
+	for _, path := range sources {
+		// Resolve to an absolute path so ActiveConfigFile always returns a
+		// canonical, non-relative location regardless of the caller's working
+		// directory.
+		abs, absErr := filepath.Abs(path)
+		if absErr != nil {
+			abs = path
 		}
+
+		// Skip files that do not exist; propagate all other errors (e.g. parse
+		// validation failures) so misconfigured files are surfaced immediately.
+		if _, statErr := os.Stat(abs); statErr != nil {
+			continue
+		}
+		if err := c.loadTOML(abs); err != nil {
+			return err
+		}
+		activeConfigFile = abs
 	}
 
 	return nil
@@ -244,6 +275,12 @@ func (c *Config) parseTOML(content string) error {
 				return errors.WrapValidationError("failure_threshold must be an integer")
 			}
 			c.FailureThreshold = n
+		case "external_source_map":
+			var repos []ExternalSourceRepo
+			if err := json.Unmarshal([]byte(value), &repos); err != nil {
+				return errors.WrapValidationError("external_source_map must be a JSON array of {prefix, remote_url, branch}")
+			}
+			c.ExternalSourceRepos = repos
 		case "retry_timeout":
 			n, err := strconv.Atoi(value)
 			if err != nil {
