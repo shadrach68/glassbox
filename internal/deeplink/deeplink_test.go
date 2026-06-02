@@ -47,6 +47,13 @@ func TestTriggerMockLink_SelfBinary(t *testing.T) {
 	}
 }
 
+func TestProbeHandler_UsesTriggerMockLink(t *testing.T) {
+	stub := buildStubBinary(t, stubExitZero)
+	if !ProbeHandler(stub) {
+		t.Error("ProbeHandler should return true when binary exits 0")
+	}
+}
+
 // TestTriggerMockLink_NonZeroExit verifies that a binary exiting non-zero
 // causes triggerMockLink to return false.
 func TestTriggerMockLink_NonZeroExit(t *testing.T) {

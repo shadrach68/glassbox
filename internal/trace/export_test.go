@@ -23,6 +23,9 @@ func TestExportExecutionTrace_HTMLAndMarkdown(t *testing.T) {
 		Function:   "transfer",
 		Arguments:  []interface{}{"100", "XLM"},
 		ReturnValue: "ok",
+		SourceFile: "src/contract.rs",
+		SourceLine: 42,
+		GitHubLink: "https://github.com/example/repo/blob/main/src/contract.rs#L42",
 	})
 	trace.AddState(ExecutionState{
 		Operation: "host_function",
@@ -60,5 +63,24 @@ func TestExportExecutionTrace_HTMLAndMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(content, "transfer") {
 		t.Fatalf("exported markdown missing expected function name")
+	}
+
+	txtPath := filepath.Join(tmpDir, "trace-export.txt")
+	if err := ExportExecutionTrace(trace, "text", txtPath); err != nil {
+		t.Fatalf("ExportExecutionTrace(text) failed: %v", err)
+	}
+	data, err = os.ReadFile(txtPath)
+	if err != nil {
+		t.Fatalf("failed to read exported text file: %v", err)
+	}
+	content = string(data)
+	if !strings.Contains(content, "Glassbox Trace Export") {
+		t.Fatalf("exported text missing expected header")
+	}
+	if !strings.Contains(content, "  Contract:  C123") {
+		t.Fatalf("exported text missing indented contract field")
+	}
+	if !strings.Contains(content, "  Source:") {
+		t.Fatalf("exported text missing source reference section")
 	}
 }

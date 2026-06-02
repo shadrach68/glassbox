@@ -88,6 +88,19 @@ func Check(selfPath string) Result {
 	return res
 }
 
+// ProbeHandler verifies that the Glassbox binary handles glassbox://doctor-probe
+// and exits cleanly. It invokes the binary directly (hermetic, no OS dispatch).
+func ProbeHandler(selfPath string) bool {
+	if selfPath == "" {
+		var err error
+		selfPath, err = os.Executable()
+		if err != nil {
+			return false
+		}
+	}
+	return triggerMockLink(selfPath)
+}
+
 // genericFixSteps returns platform-appropriate registration instructions.
 func genericFixSteps() []string {
 	switch runtime.GOOS {

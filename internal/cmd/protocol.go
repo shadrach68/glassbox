@@ -16,6 +16,9 @@ import (
 // protocolDiagnoseJSON controls whether protocol:diagnose emits JSON output.
 var protocolDiagnoseJSON bool
 
+// protocolVerifyProbe runs an optional glassbox://doctor-probe handler check.
+var protocolVerifyProbe bool
+
 var protocolRegisterCmd = &cobra.Command{
 	Use:     "protocol:register",
 	Aliases: []string{"pb:register"},
@@ -76,8 +79,15 @@ var protocolStatusCmd = &cobra.Command{
 
 var protocolVerifyCmd = &cobra.Command{
 	Use:     "protocol:verify",
-	Aliases: []string{"pb:verify"},
+	Aliases: []string{"pb:verify", "verify-protocol-registration"},
 	Short:   "Verify the native OS registration for the glassbox:// protocol handler",
+	Long: `Verify that the glassbox:// protocol handler is registered correctly on this system.
+
+The command inspects OS registration artefacts and reports pass/fail for each check.
+Use --probe to simulate a glassbox://doctor-probe deep link and confirm the handler
+responds without side effects.
+
+On failure, remediation steps are printed to help repair the registration.`,
 	GroupID: "utility",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		registrar, err := protocolreg.NewRegistrar()
@@ -92,8 +102,37 @@ var protocolVerifyCmd = &cobra.Command{
 		for _, issue := range report.Issues {
 			fmt.Fprintf(cmd.ErrOrStderr(), "[FAIL] %s\n", issue)
 		}
+
+		probePassed := true
+		if protocolVerifyProbe {
+			exePath, exeErr := os.Executable()
+			if exeErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "[FAIL] Handler probe: cannot resolve executable: %v\n", exeErr)
+				probePassed = false
+			} else if deeplink.ProbeHandler(exePath) {
+				fmt.Fprintf(cmd.OutOrStdout(), "[OK] Handler probe (%s) exited cleanly\n", deeplink.MockURL)
+			} else {
+				probePassed = false
+				fmt.Fprintf(cmd.ErrOrStderr(), "[FAIL] Handler probe (%s) did not complete successfully\n", deeplink.MockURL)
+				fmt.Fprintf(cmd.ErrOrStderr(), "       Ensure the binary handles --deep-link %s\n", deeplink.MockURL)
+			}
+		}
+
+		if err != nil || !probePassed {
+			diag := registrar.Diagnose()
+			if len(diag.RemediationSteps) > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(), "\nRemediation steps:\n")
+				for i, step := range diag.RemediationSteps {
+					fmt.Fprintf(cmd.ErrOrStderr(), "  %d. %s\n", i+1, step)
+				}
+			}
+		}
+
 		if err != nil {
 			return err
+		}
+		if !probePassed {
+			return fmt.Errorf("protocol handler probe failed")
 		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "Verified GLASSBOX Protocol registration on %s\n", report.Platform)
@@ -254,6 +293,8 @@ PERMISSION NOTES
 func init() {
 	protocolDiagnoseCmd.Flags().BoolVar(&protocolDiagnoseJSON, "json", false,
 		"Emit diagnostic report as JSON (for machine consumption)")
+	protocolVerifyCmd.Flags().BoolVar(&protocolVerifyProbe, "probe", false,
+		"Run a dry-run glassbox://doctor-probe handler check after registration verification")
 
 	rootCmd.AddCommand(protocolRegisterCmd)
 	rootCmd.AddCommand(protocolUnregisterCmd)

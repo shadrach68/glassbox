@@ -134,6 +134,18 @@ After searching:
 - **viewer.go**: Interactive TUI viewer with Bubbletea
 - **parser.go**: Converts simulator output to trace tree
 
+### Export for Sharing
+
+Export traces as markdown or plain text for chat, email, or issue trackers:
+
+```bash
+# Markdown export (preserves hierarchy and source links)
+glassbox trace --export-markdown trace.md execution.json
+
+# Plain text export
+glassbox trace --export trace.txt --export-format text execution.json
+```
+
 ### Testing
 
 ```bash

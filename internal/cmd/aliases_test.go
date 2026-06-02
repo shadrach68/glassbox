@@ -59,6 +59,7 @@ func TestProtocolCommandsHavePbAliases(t *testing.T) {
 		{protocolUnregisterCmd, "pb:unregister"},
 		{protocolStatusCmd, "pb:status"},
 		{protocolVerifyCmd, "pb:verify"},
+		{protocolVerifyCmd, "verify-protocol-registration"},
 		{protocolHandlerCmd, "pb:handle"},
 		{protocolDiagnoseCmd, "pb:diagnose"},
 		{protocolRepairCmd, "pb:repair"},

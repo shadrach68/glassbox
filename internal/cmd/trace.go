@@ -64,7 +64,13 @@ logs or piping to other tools. Add --no-color to disable ANSI colours.`,
   glassbox trace --output-json trace_export.json execution.json
 
   # Export call graph as SVG
-  glassbox trace --export-svg callgraph.svg execution.json`,
+  glassbox trace --export-svg callgraph.svg execution.json
+
+  # Export trace as markdown for sharing in chat or issue trackers
+  glassbox trace --export-markdown trace.md execution.json
+
+  # Export trace as plain text
+  glassbox trace --export trace.txt --export-format text execution.json`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Apply theme if specified, otherwise auto-detect
@@ -155,6 +161,28 @@ logs or piping to other tools. Add --no-color to disable ANSI colours.`,
 				EventSchemas: eventSchemas,
 			}
 			trace.PrintExecutionTrace(executionTrace, opts)
+			return nil
+		}
+
+		// --output-json: write deterministic schema'd JSON export and exit
+		if traceOutputJSON != "" {
+			data, err := executionTrace.ExportJSON("1.0", time.Now())
+			if err != nil {
+				return errors.WrapValidationError(fmt.Sprintf("failed to export trace json: %v", err))
+			}
+			if err := os.WriteFile(traceOutputJSON, data, 0644); err != nil {
+				return errors.WrapValidationError(fmt.Sprintf("failed to save JSON: %v", err))
+			}
+			fmt.Printf("%s Trace exported to: %s\n", visualizer.Symbol("success"), traceOutputJSON)
+			return nil
+		}
+
+		// --export-markdown: write markdown trace export and exit
+		if traceExportMarkdown != "" {
+			if err := trace.ExportExecutionTrace(executionTrace, "markdown", traceExportMarkdown); err != nil {
+				return errors.WrapValidationError(fmt.Sprintf("failed to export trace markdown: %v", err))
+			}
+			fmt.Printf("%s Trace exported to: %s\n", visualizer.Symbol("success"), traceExportMarkdown)
 			return nil
 		}
 

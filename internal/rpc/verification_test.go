@@ -284,6 +284,53 @@ func TestVerifyLedgerEntries_LargeSet(t *testing.T) {
 func TestVerifyLedgerEntryHash_EmptyKey(t *testing.T) {
 	err := VerifyLedgerEntryHash("", LedgerEntryResult{})
 	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "empty")
+}
+
+// TestValidateLedgerEntryShape_TypeMismatch ensures mismatched key/entry types are rejected.
+func TestValidateLedgerEntryShape_TypeMismatch(t *testing.T) {
+	_, contractEntry := createTestLedgerData(t, 2)
+
+	accountID := xdr.MustAddress("GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H")
+	key := xdr.LedgerKey{
+		Type: xdr.LedgerEntryTypeAccount,
+		Account: &xdr.LedgerKeyAccount{
+			AccountId: accountID,
+		},
+	}
+	kb, err := key.MarshalBinary()
+	require.NoError(t, err)
+	accountKeyB64 := base64.StdEncoding.EncodeToString(kb)
+
+	err = ValidateLedgerEntryShape(accountKeyB64, contractEntry)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match entry type")
+}
+
+// TestValidateLedgerEntryShape_MissingEntryPayload rejects entries with nil payloads.
+func TestValidateLedgerEntryShape_MissingEntryPayload(t *testing.T) {
+	keyB64, _ := createTestLedgerData(t, 1)
+
+	emptyEntry := xdr.LedgerEntry{
+		LastModifiedLedgerSeq: 1,
+		Data: xdr.LedgerEntryData{
+			Type: xdr.LedgerEntryTypeContractData,
+		},
+	}
+	eb, err := emptyEntry.MarshalBinary()
+	require.NoError(t, err)
+	entryB64 := base64.StdEncoding.EncodeToString(eb)
+
+	err = ValidateLedgerEntryShape(keyB64, entryB64)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "ContractData payload")
+}
+
+// TestValidateLedgerEntryShape_ValidPair accepts well-formed Soroban entries.
+func TestValidateLedgerEntryShape_ValidPair(t *testing.T) {
+	keyB64, entryB64 := createTestLedgerData(t, 42)
+	err := ValidateLedgerEntryShape(keyB64, entryB64)
+	assert.NoError(t, err)
 }
 
 // TestVerifyLedgerEntryHash_WhitespaceKey validates that whitespace-only keys
