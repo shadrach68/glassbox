@@ -276,3 +276,117 @@ func TestDebugPreRunE_OpIndexBelowMinusOneRejected(t *testing.T) {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }
+
+// ── Dry-run improved messaging tests (Part A) ─────────────────────────────────
+
+// TestRunDebugDryRun_PassedChecksShowOKPrefix verifies that successful checks
+// print the [OK] prefix so users can scan the output easily.
+func TestRunDebugDryRun_PassedChecksShowOKPrefix(t *testing.T) {
+	t.Cleanup(func() {
+		networkFlag = "mainnet"
+		compareNetworkFlag = ""
+		rpcURLFlag = ""
+		rpcTokenFlag = ""
+	})
+	networkFlag = "testnet"
+
+	var out, errBuf bytes.Buffer
+	cmd := makeDebugCmdForTest()
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+
+	validHash := "5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+	_ = runDebugDryRun(cmd, validHash)
+
+	stdout := out.String()
+	// Hash and network should pass and show [OK].
+	if !strings.Contains(stdout, "[OK]") {
+		t.Errorf("expected [OK] lines for valid inputs, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "Transaction hash format is valid") {
+		t.Errorf("expected hash-valid message in stdout, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "Network selection") {
+		t.Errorf("expected network-OK message in stdout, got:\n%s", stdout)
+	}
+}
+
+// TestRunDebugDryRun_FailedSummaryListsAllErrors verifies that when multiple
+// checks fail, the summary enumerates each one with a sequential number.
+func TestRunDebugDryRun_FailedSummaryListsAllErrors(t *testing.T) {
+	t.Cleanup(func() {
+		networkFlag = "mainnet"
+		compareNetworkFlag = ""
+		rpcURLFlag = ""
+		rpcTokenFlag = ""
+	})
+	networkFlag = "badnet"
+
+	var out, errBuf bytes.Buffer
+	cmd := makeDebugCmdForTest()
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+
+	// Both hash and network are invalid — expect two failures enumerated.
+	err := runDebugDryRun(cmd, "tooshort")
+	if err == nil {
+		t.Fatal("expected errors for bad hash + bad network")
+	}
+
+	stderr := errBuf.String()
+	// The summary must list at least two numbered items.
+	if !strings.Contains(stderr, "1.") {
+		t.Errorf("expected numbered list starting with '1.' in stderr, got:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "2.") {
+		t.Errorf("expected at least two numbered items in stderr, got:\n%s", stderr)
+	}
+}
+
+// TestRunDebugDryRun_HeaderAlwaysPrinted verifies the introductory
+// "Dry-run: validating debug parameters" header is always printed before
+// any check result, even when all checks fail.
+func TestRunDebugDryRun_HeaderAlwaysPrinted(t *testing.T) {
+	t.Cleanup(func() {
+		networkFlag = "mainnet"
+		compareNetworkFlag = ""
+		rpcURLFlag = ""
+		rpcTokenFlag = ""
+	})
+	networkFlag = "badnet"
+
+	var out, errBuf bytes.Buffer
+	cmd := makeDebugCmdForTest()
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+
+	_ = runDebugDryRun(cmd, "bad-hash")
+
+	if !strings.Contains(out.String(), "Dry-run: validating debug parameters") {
+		t.Errorf("header must always be printed, got:\n%s", out.String())
+	}
+}
+
+// TestRunDebugDryRun_ValidHashAndNetwork_ShowsHashLength verifies the [OK]
+// message for a valid hash prints the character count.
+func TestRunDebugDryRun_ValidHashAndNetwork_ShowsHashLength(t *testing.T) {
+	t.Cleanup(func() {
+		networkFlag = "mainnet"
+		compareNetworkFlag = ""
+		rpcURLFlag = ""
+		rpcTokenFlag = ""
+	})
+	networkFlag = "testnet"
+
+	var out, errBuf bytes.Buffer
+	cmd := makeDebugCmdForTest()
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+
+	validHash := "5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+	_ = runDebugDryRun(cmd, validHash)
+
+	if !strings.Contains(out.String(), "64 hex chars") {
+		t.Errorf("expected hash length in OK message, got:\n%s", out.String())
+	}
+}

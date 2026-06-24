@@ -250,37 +250,68 @@ Local WASM Replay Mode:
 	Args: cobra.MaximumNArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if hotReloadFlag && wasmPath == "" {
-			return errors.WrapValidationError("--hot-reload requires --wasm")
+			return errors.WrapValidationError("--hot-reload requires --wasm; provide --wasm <path> to enable hot reload")
 		}
 
 		// Demo mode, local WASM replay, local envelope file input, and offline
 		// registry load don't need a transaction hash or network connectivity.
 		if xdrFileFlag != "" && jsonFileFlag != "" {
-			return errors.WrapValidationError("only one of --xdr-file or --json-file may be specified")
+			return errors.WrapValidationError(
+				"only one of --xdr-file or --json-file may be specified; remove one of the two flags")
 		}
 		if xdrFileFlag != "" || jsonFileFlag != "" {
 			if len(args) > 0 {
-				return errors.WrapValidationError("cannot specify both a transaction hash and a local envelope file")
+				return errors.WrapValidationError(
+					"cannot specify both a transaction hash and a local envelope file; " +
+						"use either a hash or --xdr-file/--json-file, not both")
 			}
 			if watchFlag {
-				return errors.WrapValidationError("--watch cannot be used with local envelope input")
+				return errors.WrapValidationError(
+					"--watch cannot be used with local envelope input; " +
+						"remove --watch or provide a transaction hash instead")
 			}
 			if compareNetworkFlag != "" {
-				return errors.WrapValidationError("--compare-network cannot be used with local envelope input")
+				return errors.WrapValidationError(
+					"--compare-network cannot be used with local envelope input; " +
+						"remove --compare-network or use a transaction hash")
+			}
+			// Validate the local file exists before proceeding.
+			if xdrFileFlag != "" {
+				if err := validateFilePath("xdr-file", xdrFileFlag); err != nil {
+					return err
+				}
+			}
+			if jsonFileFlag != "" {
+				if err := validateFilePath("json-file", jsonFileFlag); err != nil {
+					return err
+				}
 			}
 			return nil
 		}
 
 		if demoMode || wasmPath != "" || loadSnapshotsFlag != "" {
+			// Validate WASM file exists up-front so we surface a helpful error
+			// before the user waits for flag processing.
+			if wasmPath != "" {
+				if err := validateFilePath("wasm", wasmPath); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 
 		if len(args) == 0 {
-			return errors.WrapValidationError("transaction hash is required when not using --wasm or --demo flag")
+			return errors.WrapValidationError(
+				"transaction hash is required when not using --wasm, --demo, --xdr-file, or --json-file\n" +
+					"Usage: glassbox debug <transaction-hash>\n" +
+					"Run 'glassbox debug --help' for all available options")
 		}
 
 		if err := rpc.ValidateTransactionHash(args[0]); err != nil {
-			return errors.WrapValidationError(fmt.Sprintf("invalid transaction hash format: %v", err))
+			return errors.WrapValidationError(fmt.Sprintf(
+				"invalid transaction hash %q: %v\n"+
+					"Transaction hashes must be 64 lowercase hexadecimal characters",
+				args[0], err))
 		}
 
 		if !cmd.Flags().Changed("network") {
@@ -292,25 +323,74 @@ Local WASM Replay Mode:
 			defer probeCancel()
 			if resolved, err := rpc.ResolveNetwork(probeCtx, args[0], token); err == nil {
 				networkFlag = string(resolved)
-				fmt.Printf("Resolved network: %s\n", networkFlag)
+				fmt.Printf("Auto-detected network: %s\n", networkFlag)
 			}
 		}
 
-		// Validate network flag
+		// Validate primary network flag.
 		switch rpc.Network(networkFlag) {
 		case rpc.Testnet, rpc.Mainnet, rpc.Futurenet:
 			// valid
 		default:
-			return errors.WrapInvalidNetwork(networkFlag)
+			return errors.WrapValidationError(fmt.Sprintf(
+				"invalid --network %q; must be one of: testnet, mainnet, futurenet\n"+
+					"Use 'glassbox debug --help' to see all available flags",
+				networkFlag))
 		}
 
-		// Validate compare network flag if present
+		// Validate compare network flag if present.
 		if compareNetworkFlag != "" {
 			switch rpc.Network(compareNetworkFlag) {
 			case rpc.Testnet, rpc.Mainnet, rpc.Futurenet:
 				// valid
 			default:
-				return errors.WrapInvalidNetwork(compareNetworkFlag)
+				return errors.WrapValidationError(fmt.Sprintf(
+					"invalid --compare-network %q; must be one of: testnet, mainnet, futurenet",
+					compareNetworkFlag))
+			}
+			// Guard: comparing a network against itself produces no useful diff.
+			if strings.EqualFold(networkFlag, compareNetworkFlag) {
+				return errors.WrapValidationError(fmt.Sprintf(
+					"--network and --compare-network must be different networks; both are %q",
+					networkFlag))
+			}
+		}
+
+		// Validate trace-verbosity when set explicitly.
+		if cmd.Flags().Changed("trace-verbosity") {
+			switch strings.ToLower(traceVerbosityFlag) {
+			case "summary", "normal", "verbose":
+				// valid
+			default:
+				return errors.WrapValidationError(fmt.Sprintf(
+					"invalid --trace-verbosity %q; must be one of: summary, normal, verbose",
+					traceVerbosityFlag))
+			}
+		}
+
+		// Validate --theme when set explicitly.
+		if cmd.Flags().Changed("theme") && themeFlag != "" {
+			validThemes := map[string]bool{
+				"dark": true, "light": true, "none": true,
+				"default": true, "deuteranopia": true, "protanopia": true,
+				"tritanopia": true, "high-contrast": true,
+			}
+			if !validThemes[strings.ToLower(themeFlag)] {
+				return errors.WrapValidationError(fmt.Sprintf(
+					"invalid --theme %q; must be one of: dark, light, none, default, deuteranopia, protanopia, tritanopia, high-contrast",
+					themeFlag))
+			}
+		}
+
+		// Validate --format when set explicitly.
+		if cmd.Flags().Changed("format") {
+			switch strings.ToLower(debugFormatFlag) {
+			case "text", "json":
+				// valid
+			default:
+				return errors.WrapValidationError(fmt.Sprintf(
+					"invalid --format %q; must be one of: text, json",
+					debugFormatFlag))
 			}
 		}
 
@@ -321,7 +401,10 @@ Local WASM Replay Mode:
 			return errors.WrapValidationError("--live/--latest-ledger cannot be used with --demo")
 		}
 		if opIndexFlag < -1 {
-			return errors.WrapValidationError("--op must be a non-negative integer or omitted")
+			return errors.WrapValidationError(
+				"--op must be a non-negative integer or omitted; " +
+					"use 0 for the first operation, 1 for the second, etc. " +
+					"(omit to process all operations)")
 		}
 		if secureWorkspaceFlag {
 			if contractSourceFlag != "" {
@@ -336,7 +419,9 @@ Local WASM Replay Mode:
 			}
 		}
 		if pinEndpointFlag != "" && rpcURLFlag != "" && pinEndpointFlag != rpcURLFlag {
-			return errors.WrapValidationError("--pin-endpoint must match --rpc-url when both are provided")
+			return errors.WrapValidationError(
+				"--pin-endpoint must match --rpc-url when both are provided; " +
+					"set them to the same URL or remove one")
 		}
 		return nil
 	},
@@ -352,10 +437,18 @@ Local WASM Replay Mode:
 		// Dry-run: validate inputs and environment without executing replay
 		if debugDryRunFlag {
 			if demoMode || wasmPath != "" || loadSnapshotsFlag != "" || xdrFileFlag != "" || jsonFileFlag != "" {
-				return errors.WrapValidationError("--dry-run cannot be combined with --demo, --wasm, --load-snapshots, or local envelope input")
+				return errors.WrapValidationError(
+					"--dry-run cannot be combined with --demo, --wasm, --load-snapshots, or local envelope input; " +
+						"--dry-run only validates the network transaction path")
+			}
+			if showMetricsFlag {
+				return errors.WrapValidationError(
+					"--show-metrics cannot be used with --dry-run; no simulation is executed in dry-run mode")
 			}
 			if len(cmdArgs) == 0 {
-				return errors.WrapValidationError("transaction hash is required for --dry-run")
+				return errors.WrapValidationError(
+					"transaction hash is required for --dry-run\n" +
+						"Usage: glassbox debug --dry-run --network testnet <transaction-hash>")
 			}
 			return runDebugDryRun(cmd, cmdArgs[0])
 		}
@@ -1017,7 +1110,11 @@ var entries map[string]string
 		}
 
 		if showMetricsFlag {
-			perfCollector.Print(nil)
+			if clioutput.WantsJSON(debugJSONFlag, debugFormatFlag) {
+				_ = perfCollector.PrintJSON(cmd.OutOrStdout())
+			} else {
+				perfCollector.Print(cmd.OutOrStdout())
+			}
 		}
 
 		return nil

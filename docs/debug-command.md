@@ -24,7 +24,7 @@ glassbox debug --load-snapshots <registry-file>
 |---|---|
 | `<transaction-hash>` | 64-character lowercase hex transaction hash. Required unless `--wasm`, `--demo`, `--xdr-file`, `--json-file`, or `--load-snapshots` is provided. |
 
-**Validation:** The command validates the transaction hash format before making any network calls. An invalid hash (wrong length, non-hex characters) produces an explicit error with the expected format and the actual input.
+**Validation:** The command validates the transaction hash format before making any network calls. An invalid hash produces an explicit error that includes the offending value and states the expected format (64 lowercase hex characters).
 
 ---
 
@@ -35,14 +35,20 @@ glassbox debug --load-snapshots <registry-file>
 | `--network`, `-n` | `mainnet` | Stellar network: `testnet`, `mainnet`, or `futurenet`. Auto-detected from the transaction when omitted. |
 | `--rpc-url` | _(config)_ | Custom RPC URL. Overrides config and environment. Accepts comma-separated URLs for fallback. |
 | `--rpc-token` | _(env: `GLASSBOX_RPC_TOKEN`)_ | RPC authentication token. |
-| `--compare-network` | _(none)_ | Run the same transaction on a second network and diff the results. |
-| `--network` and `--compare-network` must be different networks.
+| `--compare-network` | _(none)_ | Run the same transaction on a second network and diff the results. Must differ from `--network`. |
+
+**Network validation:** Both `--network` and `--compare-network` are validated early in `PreRunE`. Providing the same value for both flags produces:
+```
+--network and --compare-network must be different networks; both are "testnet"
+```
 
 ---
 
 ## Validation & Dry-Run
 
 `--dry-run` validates inputs and checks the environment **without executing a simulation**. Use it in CI or before a long replay to catch configuration errors early.
+
+> **Note:** `--dry-run` cannot be combined with `--show-metrics`, `--demo`, `--wasm`, `--load-snapshots`, or local envelope input flags. These combinations are rejected with a clear message explaining why.
 
 **Checks performed by `--dry-run`:**
 
@@ -52,21 +58,34 @@ glassbox debug --load-snapshots <registry-file>
 4. RPC endpoint reachability (health check with a 10-second timeout)
 5. Simulator binary presence and version compatibility
 
-**Example:**
+Each check prints `[OK]` or `[FAIL]` on its own line. On failure the output ends with a numbered list of all failures so you can address them in one pass.
+
+**Example output:**
 
 ```sh
-# Validate everything before committing to a full replay
+# All checks pass:
 glassbox debug --dry-run --network testnet 5c0a1234...ef7890ab
 
-# Output on success:
-# [OK]   Transaction hash format is valid (64 hex chars)
-# [OK]   Network selection: testnet
-# [OK]   RPC endpoint reachable (status: healthy)
-# [OK]   Simulator binary found: /usr/local/bin/glassbox-sim
-# Dry-run PASSED: all checks succeeded for transaction 5c0a1234... on testnet
+[OK]   Transaction hash format is valid (64 hex chars)
+[OK]   Network selection: testnet
+[OK]   RPC endpoint reachable (status: healthy)
+[OK]   Simulator binary found: /usr/local/bin/glassbox-sim
+       Version: 1.2.3
+
+Dry-run PASSED: all checks succeeded for transaction 5c0a1234... on testnet
+
+# Multiple failures:
+glassbox debug --dry-run --network badnet tooshort
+
+[FAIL] Invalid transaction hash format: …
+[FAIL] Invalid network: badnet (expected testnet, mainnet, or futurenet)
+
+Dry-run FAILED: 2 validation error(s)
+  1. transaction hash: …
+  2. network: invalid network "badnet"
 ```
 
-**Exit code:** `0` on pass, `1` on any validation failure with a numbered list of all failures.
+**Exit code:** `0` on pass, `1` on any validation failure.
 
 ---
 
@@ -79,6 +98,7 @@ glassbox debug --wasm ./contract.wasm --args "arg1" "arg2"
 ```
 
 Runs the contract locally with mock ledger state. Useful for rapid iteration during development.
+The `--wasm` file path is validated before execution — a missing or unreadable file surfaces an error immediately.
 
 ### Hot reload
 
@@ -86,7 +106,10 @@ Runs the contract locally with mock ledger state. Useful for rapid iteration dur
 glassbox debug --wasm ./contract.wasm --hot-reload
 ```
 
-Watches the WASM file for changes and prompts to re-run after each rebuild. Requires `--wasm`.
+Watches the WASM file for changes and prompts to re-run after each rebuild. Requires `--wasm` — omitting it returns:
+```
+--hot-reload requires --wasm; provide --wasm <path> to enable hot reload
+```
 
 ### Local envelope file
 
@@ -98,7 +121,7 @@ glassbox debug --xdr-file ./tx-envelope.xdr
 glassbox debug --json-file ./tx.json
 ```
 
-The JSON format must contain an `envelope_xdr` field. Optionally include `result_meta_xdr` and `network`.
+Both files are validated for existence before any processing begins. The JSON format must contain an `envelope_xdr` field. Optionally include `result_meta_xdr` and `network`.
 
 ### Offline snapshot replay
 
@@ -115,11 +138,64 @@ Replays a previously saved snapshot registry without any network connectivity. S
 | Flag | Default | Description |
 |---|---|---|
 | `--json` | `false` | Emit simulation results as machine-readable JSON. |
-| `--format` | `text` | Output format: `text` or `json`. |
-| `--trace-verbosity` | `normal` | Trace detail level: `summary`, `normal`, or `verbose`. |
+| `--format` | `text` | Output format: `text` or `json`. Any other value is rejected with the valid options listed. |
+| `--trace-verbosity` | `normal` | Trace detail level: `summary`, `normal`, or `verbose`. Invalid values are caught early with the accepted list. |
 | `--export-svg` | _(none)_ | Export the call graph as an SVG file. |
-| `--show-metrics` | `false` | Print RPC and simulation performance metrics after the run. |
+| `--show-metrics` | `false` | Print RPC and simulation performance metrics after the run (see Performance Metrics below). Cannot be combined with `--dry-run`. |
 | `--verbose`, `-v` | `false` | Enable verbose logging (equivalent to `--log-level=debug`). |
+
+---
+
+## Performance Metrics (`--show-metrics`)
+
+When `--show-metrics` is set, a performance summary is printed after the simulation completes. The output adapts to the active format:
+
+- **`--format text`** (default): human-readable ASCII table
+- **`--format json` / `--json`**: machine-readable JSON object with the same fields
+
+**Text summary includes:**
+- Total RPC call count and error count
+- Aggregate total / min / max / avg durations
+- Per-method breakdown (when more than one RPC method was used)
+- ⚠ Slow-call warnings for any call exceeding 3 seconds, with a remediation tip
+
+**Example text output:**
+
+```
+── Performance Summary ──────────────────────────────
+  RPC calls     : 3
+  RPC total     : 430ms
+  RPC min/max   : 80ms / 200ms
+  RPC avg       : 143ms
+
+  Per-method breakdown:
+    getTransaction               calls=1    total=200ms    avg=200ms
+    getLedgerEntries             calls=2    total=230ms    avg=115ms
+
+  ⚠  Slow RPC calls (>3s):
+     getTransaction              3200ms
+  Tip: consider using --rpc-url to switch to a faster RPC endpoint,
+       or check your network connection.
+
+  Replay time   : 85ms
+─────────────────────────────────────────────────────
+```
+
+**Example JSON output (`--format json --show-metrics`):**
+
+```json
+{
+  "rpc_calls": 3,
+  "rpc_total_ms": 430.0,
+  "rpc_min_ms": 80.0,
+  "rpc_max_ms": 200.0,
+  "rpc_avg_ms": 143.0,
+  "sim_ms": 85.0,
+  "by_method": [
+    { "method": "getTransaction", "calls": 1, "total_ms": 200.0, "avg_ms": 200.0 }
+  ]
+}
+```
 
 ---
 
@@ -135,7 +211,7 @@ Replays a previously saved snapshot registry without any network connectivity. S
 | `--mock-gas-price` | `0` | Override the gas price multiplier. |
 | `--mock-ledger-entry` | _(none)_ | Override individual ledger entries before simulation (`key:value`; repeatable). |
 | `--mock-ledger-manifest` | _(none)_ | Path to a JSON manifest containing `ledger_entries` for bulk override. |
-| `--op` / `--operation` | `-1` (all) | Select a specific zero-based operation index in multi-operation transactions. |
+| `--op` / `--operation` | `-1` (all) | Select a specific zero-based operation index. Use `0` for first, `1` for second, etc. Values below `-1` are rejected. |
 
 ---
 
@@ -149,14 +225,22 @@ Replays a previously saved snapshot registry without any network connectivity. S
 
 ---
 
+## Theme Flag
+
+| Flag | Default | Description |
+|---|---|---|
+| `--theme` | _(auto-detect)_ | Color theme override. Must be one of: `dark`, `light`, `none`, `default`, `deuteranopia`, `protanopia`, `tritanopia`, `high-contrast`. Invalid values are caught early. |
+
+---
+
 ## Session & Watch Flags
 
 | Flag | Default | Description |
 |---|---|---|
-| `--watch` | `false` | Poll for a pending transaction to appear on-chain before debugging. |
+| `--watch` | `false` | Poll for a pending transaction to appear on-chain before debugging. Cannot be combined with local envelope input. |
 | `--watch-timeout` | `30` | Timeout in seconds for `--watch` mode. |
 | `--save-snapshots` | _(none)_ | Save simulation results to a snapshot registry file. |
-| `--pin-endpoint` | _(none)_ | Pin a specific RPC endpoint and store it with the session. Must match `--rpc-url` when both are provided. |
+| `--pin-endpoint` | _(none)_ | Pin a specific RPC endpoint with the session. Must match `--rpc-url` when both are provided — a mismatch produces an explicit error naming both flags. |
 | `--no-cache` | `false` | Disable local ledger state caching for this run. |
 | `--snapshots` | `false` | Enable snapshot capture inside the simulator. |
 
@@ -179,18 +263,27 @@ See [audit-signing.md](./audit-signing.md) for the full audit workflow.
 
 ## Error Handling & Diagnostics
 
-The debug command returns explicit, actionable errors for all common failure modes:
+The debug command returns explicit, actionable errors for all common failure modes. Each error includes the invalid value and a suggested fix:
 
 | Failure | Error message |
 |---|---|
-| Invalid transaction hash | `invalid transaction hash "…" — expected 64 hexadecimal characters (got N)` |
-| Invalid `--network` | `invalid network "…" — must be one of: testnet, mainnet, futurenet` |
-| Invalid `--compare-network` | Same as above |
-| Missing `--wasm` with `--hot-reload` | `--hot-reload requires --wasm` |
-| Both `--xdr-file` and `--json-file` | `only one of --xdr-file or --json-file may be specified` |
-| Hash + local file conflict | `cannot specify both a transaction hash and a local envelope file` |
+| Invalid transaction hash | `invalid transaction hash "…" — expected 64 hexadecimal characters` |
+| Invalid `--network` | `invalid --network "…"; must be one of: testnet, mainnet, futurenet` |
+| Invalid `--compare-network` | `invalid --compare-network "…"; must be one of: testnet, mainnet, futurenet` |
+| Same `--network` and `--compare-network` | `--network and --compare-network must be different networks; both are "…"` |
+| Missing `--wasm` with `--hot-reload` | `--hot-reload requires --wasm; provide --wasm <path> to enable hot reload` |
+| Both `--xdr-file` and `--json-file` | `only one of --xdr-file or --json-file may be specified; remove one of the two flags` |
+| Hash + local file conflict | `cannot specify both a transaction hash and a local envelope file; use either a hash or --xdr-file/--json-file, not both` |
+| `--watch` with local file | `--watch cannot be used with local envelope input; remove --watch or provide a transaction hash instead` |
+| `--dry-run` with `--show-metrics` | `--show-metrics cannot be used with --dry-run; no simulation is executed in dry-run mode` |
 | `--dry-run` with local modes | `--dry-run cannot be combined with --demo, --wasm, --load-snapshots, or local envelope input` |
-| `--pin-endpoint` mismatch | `--pin-endpoint must match --rpc-url when both are provided` |
+| `--dry-run` without hash | `transaction hash is required for --dry-run` |
+| `--pin-endpoint` mismatch | `--pin-endpoint must match --rpc-url when both are provided; set them to the same URL or remove one` |
+| Invalid `--trace-verbosity` | `invalid --trace-verbosity "…"; must be one of: summary, normal, verbose` |
+| Invalid `--theme` | `invalid --theme "…"; must be one of: dark, light, none, default, …` |
+| Invalid `--format` | `invalid --format "…"; must be one of: text, json` |
+| Invalid `--op` value | `--op must be a non-negative integer or omitted; use 0 for the first operation, …` |
+| Missing hash (no local mode) | `transaction hash is required when not using --wasm, --demo, --xdr-file, or --json-file` |
 | RPC connection failure | `RPC connection failed: <underlying error>` |
 | Transaction not found | `transaction not found` — check the hash and the selected network |
 | Simulator not found | `simulator binary not found` — run `glassbox doctor --fix` |
@@ -220,7 +313,7 @@ glassbox debug 5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab
 # Debug on testnet
 glassbox debug --network testnet abc123...def789
 
-# Validate parameters without running a simulation
+# Validate parameters without running a simulation (safe for CI)
 glassbox debug --dry-run --network testnet abc123...def789
 
 # Compare execution between testnet and mainnet
@@ -235,6 +328,12 @@ glassbox debug --xdr-file ./envelope.xdr
 # Output machine-readable JSON
 glassbox debug --json 5c0a1234...ef7890ab
 
+# Show performance metrics after the run
+glassbox debug --show-metrics --network testnet abc123...def789
+
+# Show performance metrics as JSON
+glassbox debug --show-metrics --format json abc123...def789
+
 # Save ledger snapshots for offline replay
 glassbox debug --save-snapshots ./registry.json 5c0a1234...ef7890ab
 
@@ -246,7 +345,7 @@ glassbox debug --load-snapshots ./registry.json
 
 ## See Also
 
-- [`glassbox diagnostics`](./debug-command.md#diagnostics) — unified health dashboard
+- [`glassbox profile`](./debug-command.md#profile) — gas usage analysis and pprof flamegraph generation
 - [`glassbox doctor`](./sandboxed-replay.md) — environment setup checker
 - [`glassbox session`](./session-bookmarking.md) — save and restore debug sessions
 - [Snapshot deduplication](./snapshot-deduplication.md)
