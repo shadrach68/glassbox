@@ -19,10 +19,11 @@ import (
 )
 
 var (
-	auditVerifyFile      string
-	auditVerifyPublicKey string
-	auditVerifySchema    string
-	auditVerifyJSON      bool
+	auditVerifyFile         string
+	auditVerifyPublicKey    string
+	auditVerifySchema       string
+	auditVerifyJSON         bool
+	auditVerifyPreviousHash string
 )
 
 // auditVerifyResult is the structured output produced when --json is requested.
@@ -37,6 +38,8 @@ type auditVerifyResult struct {
 	HashValid       bool   `json:"hash_valid"`
 	SchemaValid     *bool  `json:"schema_valid,omitempty"`
 	ProvenanceValid *bool  `json:"provenance_valid,omitempty"`
+	ChainLinkValid  *bool  `json:"chain_link_valid,omitempty"`
+	ChainNote       string `json:"chain_note,omitempty"`
 	Error           string `json:"error,omitempty"`
 }
 
@@ -48,6 +51,18 @@ var auditVerifyCmd = &cobra.Command{
 audit:sign. The command re-derives the payload hash, checks it against the
 embedded trace_hash field, and verifies the Ed25519 signature.
 
+All inputs (--public-key, --schema, --previous-signature-hash) are validated
+before the audit log is read, and required log fields are checked before any
+cryptographic work, so malformed input fails fast with an explicit message.
+
+CHAIN INTEGRITY
+  Signed logs may carry a provenance.previous_signature_hash that links each log
+  to its predecessor, forming a tamper-evident chain. Pass the expected
+  predecessor hash with --previous-signature-hash to verify that this log links
+  to it. Without that flag the chain hash is only format-checked, not verified —
+  the command says so explicitly so a passing report is not mistaken for a
+  verified chain.
+
 EXAMPLES
   # Verify with the public key embedded in the file
   glassbox audit:verify --audit-log signed-audit.json
@@ -58,22 +73,32 @@ EXAMPLES
   # Validate payload structure against a JSON schema
   glassbox audit:verify --audit-log signed-audit.json --schema payload-schema.json
 
+  # Verify this log links to the expected previous log in the chain
+  glassbox audit:verify --audit-log signed-audit.json --previous-signature-hash <hex>
+
   # Machine-readable JSON output
   glassbox audit:verify --audit-log signed-audit.json --json`,
-	Args: cobra.NoArgs,
-	PreRunE: func(cmd *cobra.Command, args []string) error {
-		if auditVerifyFile == "" {
-			return errors.WrapCliArgumentRequired("audit-log")
-		}
-		return validateFilePath("audit-log", auditVerifyFile)
-	},
-	RunE: runAuditVerify,
+	Args:    cobra.NoArgs,
+	PreRunE: auditVerifyPreRunE,
+	RunE:    runAuditVerify,
+}
+
+// auditVerifyPreRunE validates all inputs before the audit log is read.
+func auditVerifyPreRunE(cmd *cobra.Command, args []string) error {
+	if auditVerifyFile == "" {
+		return errors.WrapCliArgumentRequired("audit-log")
+	}
+	if err := validateFilePath("audit-log", auditVerifyFile); err != nil {
+		return err
+	}
+	return validateAuditVerifyInputs(auditVerifyPublicKey, auditVerifySchema, auditVerifyPreviousHash)
 }
 
 func init() {
 	auditVerifyCmd.Flags().StringVar(&auditVerifyFile, "audit-log", "", "Path to signed audit log JSON file (required)")
 	auditVerifyCmd.Flags().StringVar(&auditVerifyPublicKey, "public-key", "", "Hex-encoded Ed25519 public key (overrides key embedded in the log)")
 	auditVerifyCmd.Flags().StringVar(&auditVerifySchema, "schema", "", "Path to a JSON schema file to validate the payload against")
+	auditVerifyCmd.Flags().StringVar(&auditVerifyPreviousHash, "previous-signature-hash", "", "Expected hex SHA-256 of the previous log; verifies this log's chain link")
 	auditVerifyCmd.Flags().BoolVar(&auditVerifyJSON, "json", false, "Output verification result as JSON")
 
 	rootCmd.AddCommand(auditVerifyCmd)
@@ -88,6 +113,12 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 	var log SignedAuditLog
 	if err := json.Unmarshal(data, &log); err != nil {
 		return errors.WrapValidationError(fmt.Sprintf("failed to parse audit log JSON: %v", err))
+	}
+
+	// Reject structurally incomplete logs before any cryptographic work, so a
+	// missing field produces an explicit message rather than an opaque failure.
+	if err := validateAuditLogFields(&log, auditVerifyPublicKey != ""); err != nil {
+		return err
 	}
 
 	result := auditVerifyResult{
@@ -150,14 +181,30 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 	if log.Provenance != nil {
 		provValid, provErr := validateProvenance(log.Provenance)
 		result.ProvenanceValid = &provValid
-		if provErr != nil && result.Error == "" {
-			result.Error = fmt.Sprintf("provenance validation: %v", provErr)
+		if provErr != nil {
+			result.Error = appendErr(result.Error, fmt.Sprintf("provenance validation: %v", provErr))
 		}
+	}
+
+	// Step 5: Chain-link verification.
+	// When --previous-signature-hash is supplied, verify this log actually links
+	// to the expected predecessor. Otherwise, if the log carries a chain hash,
+	// make clear it was only format-checked — not verified against a prior log.
+	if auditVerifyPreviousHash != "" {
+		linkValid, linkErr := verifyChainLink(&log, auditVerifyPreviousHash)
+		result.ChainLinkValid = &linkValid
+		if linkErr != nil {
+			result.Error = appendErr(result.Error, fmt.Sprintf("chain link: %v", linkErr))
+		}
+	} else if log.Provenance != nil && log.Provenance.PreviousSignatureHash != "" {
+		result.ChainNote = "previous_signature_hash is present but chain linkage was not verified; " +
+			"pass --previous-signature-hash <hex> to confirm this log links to the expected predecessor"
 	}
 
 	result.Valid = result.HashValid && result.SignatureValid &&
 		(result.SchemaValid == nil || *result.SchemaValid) &&
-		(result.ProvenanceValid == nil || *result.ProvenanceValid)
+		(result.ProvenanceValid == nil || *result.ProvenanceValid) &&
+		(result.ChainLinkValid == nil || *result.ChainLinkValid)
 
 	return outputVerifyResult(cmd, result, result.Valid)
 }
@@ -204,6 +251,13 @@ func outputVerifyResult(cmd *cobra.Command, r auditVerifyResult, valid bool) err
 	}
 	if r.ProvenanceValid != nil {
 		printCheck(out, "Provenance  ", *r.ProvenanceValid)
+	}
+	if r.ChainLinkValid != nil {
+		printCheck(out, "Chain link  ", *r.ChainLinkValid)
+	}
+
+	if r.ChainNote != "" {
+		fmt.Fprintf(out, "\nNote: %s\n", r.ChainNote)
 	}
 
 	fmt.Fprintln(out)
@@ -337,15 +391,127 @@ func validateProvenance(p *SignatureProvenance) (bool, error) {
 
 	// Validate previous_signature_hash: must be a 64-char hex string when set.
 	if p.PreviousSignatureHash != "" {
-		if len(p.PreviousSignatureHash) != 64 {
-			return false, fmt.Errorf("previous_signature_hash must be a 64-character hex string (SHA-256)")
-		}
-		for _, c := range p.PreviousSignatureHash {
-			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-				return false, fmt.Errorf("previous_signature_hash contains non-hex character %q", c)
-			}
+		if err := validateSHA256HexHash("previous_signature_hash", p.PreviousSignatureHash); err != nil {
+			return false, err
 		}
 	}
 
 	return true, nil
+}
+
+// validateAuditVerifyInputs validates the command's flag inputs before the audit
+// log is read, so malformed values fail fast with an explicit message. It checks
+// the --public-key hex/length, the --schema file path, and the
+// --previous-signature-hash format when each is provided.
+func validateAuditVerifyInputs(pubKeyHex, schemaPath, previousHash string) error {
+	if pubKeyHex != "" {
+		b, err := hex.DecodeString(pubKeyHex)
+		if err != nil {
+			return errors.WrapValidationError(fmt.Sprintf("--public-key is not valid hex: %v", err))
+		}
+		if len(b) != ed25519.PublicKeySize {
+			return errors.WrapValidationError(fmt.Sprintf(
+				"--public-key must be %d bytes (%d hex characters), got %d bytes",
+				ed25519.PublicKeySize, ed25519.PublicKeySize*2, len(b)))
+		}
+	}
+
+	if schemaPath != "" {
+		if err := validateFilePath("schema", schemaPath); err != nil {
+			return err
+		}
+	}
+
+	if previousHash != "" {
+		if err := validateSHA256HexHash("--previous-signature-hash", previousHash); err != nil {
+			return errors.WrapValidationError(err.Error())
+		}
+	}
+
+	return nil
+}
+
+// validateAuditLogFields rejects a structurally incomplete signed audit log
+// before any cryptographic work. When the public key is supplied separately via
+// --public-key, an absent embedded public_key is allowed.
+func validateAuditLogFields(log *SignedAuditLog, hasPubKeyOverride bool) error {
+	var missing []string
+	if strings.TrimSpace(log.Signature) == "" {
+		missing = append(missing, "signature")
+	}
+	if strings.TrimSpace(log.TraceHash) == "" {
+		missing = append(missing, "trace_hash")
+	}
+	if !hasPubKeyOverride && strings.TrimSpace(log.PublicKey) == "" {
+		missing = append(missing, "public_key")
+	}
+	if len(log.Payload) == 0 {
+		missing = append(missing, "payload")
+	}
+
+	if len(missing) > 0 {
+		return errors.WrapValidationError(fmt.Sprintf(
+			"audit log is missing required field(s): %s\n"+
+				"  A signed audit log must contain signature, trace_hash, public_key, and payload.\n"+
+				"  If the public key is provided separately, pass it with --public-key.",
+			strings.Join(missing, ", ")))
+	}
+
+	return nil
+}
+
+// verifyChainLink checks that the log's provenance.previous_signature_hash equals
+// the expected predecessor hash, confirming this log's link in the audit chain.
+// Comparison is case-insensitive. It returns an actionable error when the log
+// carries no chain hash (e.g. a genesis entry or missing provenance) or when the
+// hashes differ.
+func verifyChainLink(log *SignedAuditLog, expectedPreviousHash string) (bool, error) {
+	expected := strings.ToLower(strings.TrimSpace(expectedPreviousHash))
+
+	if log.Provenance == nil || strings.TrimSpace(log.Provenance.PreviousSignatureHash) == "" {
+		return false, fmt.Errorf(
+			"this audit log has no previous_signature_hash to verify — it may be the genesis " +
+				"entry of the chain, or it was signed without provenance; omit --previous-signature-hash " +
+				"to verify it as a standalone log")
+	}
+
+	actual := strings.ToLower(strings.TrimSpace(log.Provenance.PreviousSignatureHash))
+	if actual != expected {
+		return false, fmt.Errorf(
+			"chain link broken: log's previous_signature_hash %s does not match the expected predecessor %s",
+			shortHash(actual), shortHash(expected))
+	}
+
+	return true, nil
+}
+
+// validateSHA256HexHash verifies that h is a 64-character hexadecimal string
+// (the form of a hex-encoded SHA-256 digest). label names the value in errors.
+func validateSHA256HexHash(label, h string) error {
+	if len(h) != 64 {
+		return fmt.Errorf("%s must be a 64-character hex string (SHA-256), got %d characters", label, len(h))
+	}
+	for _, c := range h {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return fmt.Errorf("%s contains non-hex character %q", label, c)
+		}
+	}
+	return nil
+}
+
+// shortHash abbreviates a hash for readable diagnostics (first 8 + last 8 chars).
+func shortHash(h string) string {
+	if len(h) <= 16 {
+		return h
+	}
+	return h[:8] + "…" + h[len(h)-8:]
+}
+
+// appendErr joins error messages so multiple failures are surfaced together
+// instead of one masking another.
+func appendErr(existing, msg string) string {
+	if existing == "" {
+		return msg
+	}
+	return existing + "; " + msg
 }
