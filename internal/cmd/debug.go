@@ -26,6 +26,7 @@ import (
 	"github.com/dotandev/glassbox/internal/logger"
 	"github.com/dotandev/glassbox/internal/lto"
 	"github.com/dotandev/glassbox/internal/perfmetrics"
+	"github.com/dotandev/glassbox/internal/profile"
 	"github.com/dotandev/glassbox/internal/replay"
 	"github.com/dotandev/glassbox/internal/rpc"
 	"github.com/dotandev/glassbox/internal/security"
@@ -414,6 +415,20 @@ Local WASM Replay Mode:
 				return errors.WrapValidationError(fmt.Sprintf(
 					"invalid --trace-verbosity %q — must be one of: summary, normal, verbose",
 					traceVerbosityFlag,
+				))
+			}
+		}
+
+		// Validate --profile-format when --profile is enabled.
+		if ProfileFlag {
+			switch strings.ToLower(strings.TrimSpace(ProfileFormatFlag)) {
+			case "html", "svg", "":
+				// valid
+			default:
+				return errors.WrapValidationError(fmt.Sprintf(
+					"invalid --profile-format %q — must be one of: html, svg\n"+
+						"  Fix: use --profile-format html (interactive flamegraph) or svg (raw SVG)",
+					ProfileFormatFlag,
 				))
 			}
 		}
@@ -1326,6 +1341,102 @@ var entries map[string]string
 				} else {
 					fmt.Printf("Arweave TXID : %s\n", result.TXID)
 					fmt.Printf("Arweave URL  : %s\n", result.URL)
+				}
+			}
+		}
+
+		// ── Trace export ────────────────────────────────────────────────────────
+		// Build an ExecutionTrace from the last simulation's diagnostic events
+		// whenever trace output was requested (--generate-trace / --trace-output).
+		if (generateTrace || traceOutputFile != "") && lastSimResp != nil {
+			outPath := traceOutputFile
+			if outPath == "" {
+				// Default filename when only --generate-trace was supplied.
+				outPath = "trace-" + txHash[:min(8, len(txHash))] + ".json"
+			}
+			execTrace := trace.BuildExecutionTraceFromSimResponse(txHash, lastSimResp)
+			if len(execTrace.States) == 0 {
+				fmt.Fprintf(os.Stderr,
+					"Warning: trace export skipped — the simulator produced no diagnostic events for this transaction.\n"+
+						"  Ensure the simulator is up-to-date and the transaction includes InvokeHostFunction operations.\n"+
+						"  Run 'glassbox doctor --fix' to refresh the simulator binary.\n",
+				)
+			} else {
+				targetFmt := strings.ToLower(strings.TrimSpace(debugFormatFlag))
+				if targetFmt == "" || targetFmt == "text" || targetFmt == "json" {
+					// Default trace export format is JSON regardless of the display format.
+					targetFmt = "json"
+				}
+				fmt.Fprintf(os.Stderr, "Exporting %d-step trace as %s to %s...\n",
+					len(execTrace.States), targetFmt, outPath)
+				if err := trace.ExportWithCompatibility(execTrace, targetFmt, outPath, trace.ExportOptions{}, trace.DefaultCompatibilityOptions()); err != nil {
+					fmt.Fprintf(os.Stderr,
+						"%s Trace export failed: %v\n"+
+							"  Fix: check that the output directory exists and you have write permissions.\n"+
+							"  Path: %s\n",
+						visualizer.Symbol("error"), err, outPath,
+					)
+				} else {
+					sizeStr := traceExportedFileSize(outPath)
+					fmt.Printf("%s Trace exported to: %s%s\n", visualizer.Symbol("success"), outPath, sizeStr)
+				}
+			}
+		}
+
+		// ── Flamegraph / pprof profiling ─────────────────────────────────────
+		// Produce a flamegraph when the global --profile flag was set.
+		if ProfileFlag && lastSimResp != nil {
+			execTrace := trace.BuildExecutionTraceFromSimResponse(txHash, lastSimResp)
+			if len(execTrace.States) == 0 {
+				fmt.Fprintf(os.Stderr,
+					"Warning: flamegraph skipped — no diagnostic events available.\n"+
+						"  Run with --snapshots or ensure the simulator produces diagnostic events.\n",
+				)
+			} else {
+				format := visualizer.ExportFormat(strings.ToLower(strings.TrimSpace(ProfileFormatFlag)))
+				if format != visualizer.FormatHTML && format != visualizer.FormatSVG {
+					format = visualizer.FormatHTML
+				}
+				flamegraphPath := txHash[:min(8, len(txHash))] + format.GetFileExtension()
+
+				// Two code paths: if the simulator returned a raw SVG flamegraph use
+				// that; otherwise generate one from the trace gas data via profile.
+				var flamegraphContent string
+				if lastSimResp.Flamegraph != "" {
+					flamegraphContent = visualizer.ExportFlamegraph(lastSimResp.Flamegraph, format)
+				} else {
+					if format == visualizer.FormatHTML {
+						// Use profile.GenerateHTML which writes to an io.Writer.
+						var profileBuf strings.Builder
+						if genErr := profile.GenerateHTML(execTrace, &profileBuf); genErr != nil {
+							fmt.Fprintf(os.Stderr,
+								"Warning: failed to generate flamegraph HTML: %v\n",
+								genErr,
+							)
+						} else {
+							flamegraphContent = profileBuf.String()
+						}
+					} else {
+						// SVG: not producible without the inferno crate output.
+						// Emit a clear diagnostic rather than an empty file.
+						fmt.Fprintf(os.Stderr,
+							"Warning: --profile-format=svg requires the simulator to return a raw flamegraph SVG.\n"+
+								"  The simulator did not return a flamegraph for this transaction.\n"+
+								"  Use --profile-format=html to generate an interactive flamegraph from trace data instead.\n",
+						)
+					}
+				}
+
+				if flamegraphContent != "" {
+					if err := os.WriteFile(flamegraphPath, []byte(flamegraphContent), 0o644); err != nil {
+						fmt.Fprintf(os.Stderr,
+							"%s Failed to write flamegraph to %q: %v\n"+
+								"  Fix: ensure the output directory exists and you have write permissions.\n",
+							visualizer.Symbol("error"), flamegraphPath, err,
+						)
+					} else {
+						fmt.Printf("%s Flamegraph exported to: %s\n", visualizer.Symbol("success"), flamegraphPath)
+					}
 				}
 			}
 		}

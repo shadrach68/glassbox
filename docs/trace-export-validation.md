@@ -1,6 +1,6 @@
 # Trace Export Validation and Diagnostics
 
-The `glassbox debug` command includes comprehensive validation and diagnostic capabilities for trace export operations. This document describes the validation checks, error handling, and troubleshooting guidance.
+The `glassbox debug` and `glassbox trace` commands include comprehensive validation and diagnostic capabilities for trace export operations. This document describes the validation checks, error handling, and troubleshooting guidance for both commands.
 
 ---
 
@@ -8,7 +8,7 @@ The `glassbox debug` command includes comprehensive validation and diagnostic ca
 
 Trace export validation occurs at multiple stages:
 
-1. **Pre-flight validation** — CLI flag validation before any simulation
+1. **Pre-flight validation** — CLI flag validation before any simulation or file load
 2. **Pre-export validation** — Trace data and configuration validation before export
 3. **Format compatibility** — Format-specific checks for data compatibility
 4. **Export execution** — File system and I/O validation during write
@@ -319,9 +319,161 @@ fi
 
 ---
 
+## `glassbox trace` Command Export Validation
+
+The `glassbox trace` command validates its export-related flags in `PreRunE` before loading or processing any trace file.
+
+### `--export-format`
+
+**Valid values:** `html`, `markdown` (or `md`), `json`, `text`
+
+**Validation:**
+- Only checked when `--export` is also provided
+- Must be one of the four supported values (case-insensitive)
+- Empty/default value (`html`) is always accepted
+
+**Error example:**
+```
+invalid --export-format "yaml" — must be one of: html, markdown, json, text
+  Fix: use --export-format html (interactive), markdown (shareable), json (machine-readable), or text (plain)
+```
+
+### `--export`
+
+**Validation:**
+- Path must not end with `/` or `\` (directory path guard)
+- Cannot be combined with `--print`
+- Cannot be combined with `--export-markdown`
+
+**Error example:**
+```
+--export "./traces/" looks like a directory path; provide a full file path
+  Fix: specify a filename (e.g. --export ./traces/output.html)
+  Example: glassbox trace --export ./traces/report.html execution.json
+```
+
+```
+cannot specify both --export and --print
+  Fix: use --export to write to a file, or --print to output to stdout — not both
+```
+
+### `--export-markdown`
+
+**Validation:**
+- Path must not end with `/` or `\`
+- Cannot be combined with `--export`
+
+**Error example:**
+```
+--export-markdown "./reports/" looks like a directory path; provide a full file path
+  Fix: specify a filename (e.g. --export-markdown ./traces/report.md)
+```
+
+### `--output-json`
+
+**Validation:**
+- Path must not end with `/` or `\`
+
+### `--export-svg`
+
+**Validation:**
+- Path must not end with `/` or `\`
+- The trace must contain diagnostic events (error if empty, with remediation)
+
+**Error example:**
+```
+no diagnostic events found in trace — call graph cannot be generated
+  Possible causes:
+    - The trace was captured without diagnostic events
+    - The transaction did not call any contracts
+  Fix: re-run with a transaction that includes contract calls
+  Tip: use --trace-verbosity verbose when capturing the trace for maximum detail
+```
+
+### `--trace-verbosity`
+
+**Valid values:** `summary`, `normal`, `verbose`
+
+**Validation:**
+- Must be one of the three supported values
+
+**Error example:**
+```
+invalid --trace-verbosity "extreme" — must be one of: summary, normal, verbose
+  Fix: use --trace-verbosity normal (default), summary (minimal), or verbose (detailed)
+```
+
+### `--annotations`
+
+**Validation:**
+- File must exist on disk
+
+**Error example:**
+```
+--annotations: file not found: "/path/to/annotations.json"
+  Fix: provide a valid path to an annotations JSON file
+```
+
+### `--gas-model`
+
+**Validation:**
+- File must exist on disk
+
+**Error example:**
+```
+--gas-model: file not found: "/path/to/gas.json"
+  Fix: provide a valid path to a gas model JSON file
+```
+
+### `--meta`
+
+**Validation:**
+- Every value must be in `key=value` format
+- Key must not be empty
+
+**Error example:**
+```
+--meta value "no-equals-sign" is not in key=value format
+  Fix: supply metadata as key=value pairs, e.g. --meta env=testnet --meta version=1.2
+```
+
+### Multiple Validation Errors (`glassbox trace`)
+
+All failures are collected and reported together:
+
+```
+2 trace command validation error(s):
+  1. invalid --export-format "yaml" — must be one of: html, markdown, json, text
+     Fix: use --export-format html (interactive), markdown (shareable), json (machine-readable), or text (plain)
+  2. --export "./traces/" looks like a directory path; provide a full file path
+     Fix: specify a filename (e.g. --export ./traces/output.html)
+```
+
+### Trace File Not Found (`glassbox trace`)
+
+When the trace file argument does not exist:
+
+```
+trace file not found: "execution.json"
+  Fix: verify the path is correct and the file exists
+  Tip: trace files are produced by 'glassbox debug --trace-output <file>'
+```
+
+### No Trace File Supplied
+
+```
+trace file is required
+  Usage: glassbox trace <trace-file>
+  Or:    glassbox trace --file <trace-file>
+  Run 'glassbox trace --help' for all available options
+```
+
+---
+
 ## See Also
 
 - [Debug Command Reference](./debug-command.md)
 - [Trace Export Annotations](./trace-export-annotations.md)
+- [Trace Profiling and Performance](./trace-profiling.md)
 - [Event Schemas](./event-schemas.md)
 - [JSON Output Format](./json-output.md)

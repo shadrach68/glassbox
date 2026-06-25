@@ -6,6 +6,7 @@ package profile
 import (
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/dotandev/glassbox/internal/trace"
 	goprofile "github.com/google/pprof/profile"
@@ -23,7 +24,21 @@ const (
 // go tool pprof.
 func TraceToPprof(execTrace *trace.ExecutionTrace) (*goprofile.Profile, error) {
 	if execTrace == nil {
-		return nil, fmt.Errorf("execution trace is nil")
+		return nil, fmt.Errorf("execution trace is nil — cannot generate pprof profile\n" +
+			"  Fix: ensure the simulation completed successfully before profiling\n" +
+			"  Tip: run 'glassbox debug --save-snapshots <file>' to generate a trace")
+	}
+
+	// Validate step ordering up-front so we surface corruption early.
+	for i, state := range execTrace.States {
+		if state.Step != i {
+			return nil, fmt.Errorf(
+				"trace step index mismatch at position %d: state.Step=%d — trace may be corrupted\n"+
+					"  Fix: re-run 'glassbox debug --trace-output <file>' to regenerate a clean trace\n"+
+					"  Check: if using --save-snapshots, ensure no partial writes occurred",
+				i, state.Step,
+			)
+		}
 	}
 
 	p := &goprofile.Profile{
@@ -99,8 +114,24 @@ func TraceToPprof(execTrace *trace.ExecutionTrace) (*goprofile.Profile, error) {
 	}
 
 	if err := p.CheckValid(); err != nil {
-		return nil, fmt.Errorf("profile validation failed: %w", err)
+		return nil, fmt.Errorf("pprof profile validation failed: %w\n"+
+			"  This may indicate the trace contains invalid or inconsistent data\n"+
+			"  Fix: re-run the simulation to regenerate a clean trace", err)
 	}
+
+	if len(p.Sample) == 0 && len(execTrace.States) > 0 {
+		// Not a hard error — zero-gas traces are valid (e.g. read-only calls).
+		// Callers can check p.Sample themselves; we surface a hint via stderr
+		// so the user knows why the flamegraph may be empty.
+		fmt.Fprintf(os.Stderr,
+			"Info: no gas samples found in trace — all steps reported zero gas usage.\n"+
+				"  The pprof profile will be empty. Possible causes:\n"+
+				"    - The contract does not record gas in HostState[\"gas_used\"]\n"+
+				"    - The simulator version predates gas tracking\n"+
+				"  Tip: use 'glassbox profile --xdr <tx.xdr>' for a live gas report\n",
+		)
+	}
+
 	return p, nil
 }
 

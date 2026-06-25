@@ -224,3 +224,130 @@ func TestProfilePreRunE_OutJSON_CurrentDir_Passes(t *testing.T) {
 		t.Errorf("current-dir out-json path should not fail PreRunE, got: %v", err)
 	}
 }
+
+// ── --output (pprof path) validation ─────────────────────────────────────────
+
+// TestProfilePreRunE_Output_DirectoryPath_Rejected verifies that a pprof
+// --output path ending with "/" is caught early with a clear error.
+func TestProfilePreRunE_Output_DirectoryPath_Rejected(t *testing.T) {
+	t.Cleanup(resetProfileFlags)
+	profileTraceFile = "" // will be filled via positional arg below
+	profileOutput = "./profiles/" // directory path
+
+	tmp := filepath.Join(t.TempDir(), "trace.json")
+	if err := os.WriteFile(tmp, []byte(`{"states":[]}`), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	err := profileCmd.PreRunE(profileCmd, []string{tmp})
+	if err == nil {
+		t.Fatal("expected error for --output that looks like a directory")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "directory path") {
+		t.Errorf("error should mention 'directory path', got: %q", msg)
+	}
+	if !strings.Contains(msg, "--output") {
+		t.Errorf("error should mention '--output', got: %q", msg)
+	}
+	if !strings.Contains(msg, "Fix:") {
+		t.Errorf("error should include a Fix hint, got: %q", msg)
+	}
+}
+
+// TestProfilePreRunE_Output_MissingParentDirectory_Rejected verifies that a
+// non-existent parent directory for --output is caught before any work begins.
+func TestProfilePreRunE_Output_MissingParentDirectory_Rejected(t *testing.T) {
+	t.Cleanup(resetProfileFlags)
+	profileOutput = "/nonexistent/subdir/gas.pb.gz"
+
+	tmp := filepath.Join(t.TempDir(), "trace.json")
+	if err := os.WriteFile(tmp, []byte(`{"states":[]}`), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	err := profileCmd.PreRunE(profileCmd, []string{tmp})
+	if err == nil {
+		t.Fatal("expected error for --output with non-existent parent directory")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("error should mention 'does not exist', got: %q", err.Error())
+	}
+}
+
+// TestProfilePreRunE_Output_ExistingDirectory_Passes verifies that a well-formed
+// --output path in an existing directory passes PreRunE.
+func TestProfilePreRunE_Output_ExistingDirectory_Passes(t *testing.T) {
+	t.Cleanup(resetProfileFlags)
+	profileOutput = filepath.Join(t.TempDir(), "gas.pb.gz")
+
+	tmp := filepath.Join(t.TempDir(), "trace.json")
+	if err := os.WriteFile(tmp, []byte(`{"states":[]}`), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	err := profileCmd.PreRunE(profileCmd, []string{tmp})
+	if err != nil && (strings.Contains(err.Error(), "does not exist") || strings.Contains(err.Error(), "directory path")) {
+		t.Errorf("valid --output path should not fail PreRunE, got: %v", err)
+	}
+}
+
+// TestProfilePreRunE_Output_Default_Passes verifies that the default
+// "profile.pb.gz" output value (set by init) does not trigger directory validation.
+func TestProfilePreRunE_Output_Default_Passes(t *testing.T) {
+	t.Cleanup(resetProfileFlags)
+	// profileOutput is already "profile.pb.gz" from resetProfileFlags
+
+	tmp := filepath.Join(t.TempDir(), "trace.json")
+	if err := os.WriteFile(tmp, []byte(`{"states":[]}`), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	err := profileCmd.PreRunE(profileCmd, []string{tmp})
+	if err != nil && strings.Contains(err.Error(), "--output") {
+		t.Errorf("default --output value should not fail PreRunE, got: %v", err)
+	}
+}
+
+// ── --out-json path validation (enhanced) ────────────────────────────────────
+
+// TestProfilePreRunE_OutJSON_DirectoryPath_Rejected verifies that an
+// --out-json path ending with "/" is caught early with a clear error.
+func TestProfilePreRunE_OutJSON_DirectoryPath_Rejected(t *testing.T) {
+	t.Cleanup(resetProfileFlags)
+	profileXdr = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+	profileNetwork = "testnet"
+	profileOutJSON = "./reports/" // directory path
+
+	err := profileCmd.PreRunE(profileCmd, []string{})
+	if err == nil {
+		t.Fatal("expected error for --out-json that looks like a directory")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "directory path") {
+		t.Errorf("error should mention 'directory path', got: %q", msg)
+	}
+	if !strings.Contains(msg, "--out-json") {
+		t.Errorf("error should mention '--out-json', got: %q", msg)
+	}
+	if !strings.Contains(msg, "Fix:") {
+		t.Errorf("error should include a Fix hint, got: %q", msg)
+	}
+}
+
+// TestProfilePreRunE_OutJSON_MissingDirectory_HasFixHint verifies that the
+// error for a non-existent --out-json directory includes a 'Fix:' hint.
+func TestProfilePreRunE_OutJSON_MissingDirectory_HasFixHint(t *testing.T) {
+	t.Cleanup(resetProfileFlags)
+	profileXdr = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+	profileNetwork = "testnet"
+	profileOutJSON = "/nonexistent/dir/report.json"
+
+	err := profileCmd.PreRunE(profileCmd, []string{})
+	if err == nil {
+		t.Fatal("expected error for non-existent --out-json directory")
+	}
+	if !strings.Contains(err.Error(), "Fix:") {
+		t.Errorf("error should include a Fix hint, got: %q", err.Error())
+	}
+}

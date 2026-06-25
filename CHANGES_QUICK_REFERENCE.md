@@ -1,6 +1,56 @@
 # Quick Reference: Debug and Trace Export Improvements
 
-## What Changed
+## What Changed (Latest Session)
+
+### Profile Command — CLI Ergonomics (Part A)
+**File:** `internal/cmd/profile.go`
+
+**New Validations:**
+- ✅ `--output` (pprof path): directory-path guard (trailing `/` or `\` rejected)
+- ✅ `--output`: non-existent parent directory caught before execution
+- ✅ `--out-json`: directory-path guard (was missing; now consistent with `--output`)
+- ✅ `--out-json`: non-existent parent directory now includes a `Fix:` hint
+- ✅ Empty-trace early-warning in `runTraceProfile` (non-fatal, clear message + remediation)
+- ✅ File-create failure in `runTraceProfile` now includes a `Tip:` for alternate output path
+
+**Updated Help Text:**
+- Long description updated with `Output options:` section and performance notes
+
+**New Tests (`internal/cmd/profile_validation_test.go`):**
+- `TestProfilePreRunE_Output_DirectoryPath_Rejected`
+- `TestProfilePreRunE_Output_MissingParentDirectory_Rejected`
+- `TestProfilePreRunE_Output_ExistingDirectory_Passes`
+- `TestProfilePreRunE_Output_Default_Passes`
+- `TestProfilePreRunE_OutJSON_DirectoryPath_Rejected`
+- `TestProfilePreRunE_OutJSON_MissingDirectory_HasFixHint`
+
+### Performance and Profiling Trace Export (Part B)
+**Files:** `internal/profile/generator.go`, `internal/profile/pprof.go`
+
+**New Diagnostics:**
+- ✅ `GenerateHTML`: empty-trace warning on stderr (non-fatal — blank HTML is still written)
+- ✅ `TraceToPprof`: step-index mismatch errors now include a `Fix:` hint with `glassbox debug` reference
+- ✅ `runTraceProfile`: actionable warning when trace has zero steps (explains causes + next steps)
+- ✅ `runTraceProfile`: pprof-write failure now includes `Fix:` and `Check:` lines
+
+**New Tests (`internal/profile/generator_test.go`):**
+- `TestGenerateHTML_EmptyTrace_StillProducesOutput`
+- `TestGenerateHTML_NilWriter_ReturnsError`
+
+**New Tests (`internal/profile/pprof_test.go`):**
+- `TestTraceToPprof_EmptyTrace_ReturnsEmptyProfile`
+- `TestTraceToPprof_StepIndexMismatch_ReturnsActionableError`
+- `TestWritePprof_EmptyTrace_Succeeds`
+- `TestTraceToPprof_ZeroGasSteps_ProducesNoSamples`
+- `TestTraceToPprof_MixedGasAndZero_OnlyCapturesPositive`
+
+**New Documentation:**
+- `docs/trace-profiling.md` — full reference for `glassbox profile` export modes,
+  validation checks, error messages, zero-gas behaviour, and troubleshooting
+
+---
+
+## What Changed (Previous Session)
 
 ### Debug Command (Task A)
 **File:** `internal/cmd/debug_dry_run.go`

@@ -441,9 +441,10 @@ selected network, and unsupported Soroban protocol versions.
 
 ## See Also
 
-- [`glassbox profile`](./debug-command.md#profile) — gas usage analysis and pprof flamegraph generation
+- [`glassbox profile`](./trace-profiling.md) — gas usage analysis, pprof flamegraph generation, and profiling export
 - [`glassbox doctor`](./sandboxed-replay.md) — environment setup checker
 - [`glassbox session`](./session-bookmarking.md) — save and restore debug sessions
+- [Trace export validation](./trace-export-validation.md) — validation checks for `--trace-output`
 - [Snapshot deduplication](./snapshot-deduplication.md)
 - [Source mapping](./source-mapping.md)
 - [Audit signing](./audit-signing.md)

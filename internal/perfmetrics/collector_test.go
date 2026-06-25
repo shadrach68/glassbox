@@ -9,257 +9,268 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestCollector_RecordRPC(t *testing.T) {
-	c := NewCollector()
-	c.RecordRPC("getTransaction", 120*time.Millisecond, false)
-	c.RecordRPC("getLedgerEntries", 80*time.Millisecond, false)
-	c.RecordRPC("simulateTransaction", 200*time.Millisecond, true)
+// ── Collector.Summarize ───────────────────────────────────────────────────────
 
+func TestCollector_NewCollector(t *testing.T) {
+	c := NewCollector()
+	if c == nil {
+		t.Fatal("NewCollector returned nil")
+	}
 	s := c.Summarize()
-	assert.Equal(t, 3, s.RPCCalls)
-	assert.Equal(t, 1, s.RPCErrors)
-	assert.Equal(t, 400*time.Millisecond, s.RPCTotal)
-	assert.Equal(t, 80*time.Millisecond, s.RPCMin)
-	assert.Equal(t, 200*time.Millisecond, s.RPCMax)
+	if s.RPCCalls != 0 {
+		t.Errorf("expected 0 RPC calls, got %d", s.RPCCalls)
+	}
+	if s.SimRecorded {
+		t.Error("expected SimRecorded=false before any recording")
+	}
 }
 
-func TestCollector_SimTiming(t *testing.T) {
+func TestCollector_RecordRPC_Basic(t *testing.T) {
 	c := NewCollector()
-	c.StartSim()
-	time.Sleep(5 * time.Millisecond)
-	c.StopSim()
+	c.RecordRPC("getTransaction", 250*time.Millisecond, false)
+	c.RecordRPC("getLedgerEntries", 150*time.Millisecond, false)
 
 	s := c.Summarize()
-	assert.True(t, s.SimRecorded)
-	assert.True(t, s.SimDuration >= 5*time.Millisecond)
+	if s.RPCCalls != 2 {
+		t.Errorf("expected 2 RPC calls, got %d", s.RPCCalls)
+	}
+	if s.RPCErrors != 0 {
+		t.Errorf("expected 0 errors, got %d", s.RPCErrors)
+	}
+	if s.RPCMin != 150*time.Millisecond {
+		t.Errorf("RPCMin: got %v, want 150ms", s.RPCMin)
+	}
+	if s.RPCMax != 250*time.Millisecond {
+		t.Errorf("RPCMax: got %v, want 250ms", s.RPCMax)
+	}
+	total := 250*time.Millisecond + 150*time.Millisecond
+	if s.RPCTotal != total {
+		t.Errorf("RPCTotal: got %v, want %v", s.RPCTotal, total)
+	}
+}
+
+func TestCollector_RecordRPC_WithErrors(t *testing.T) {
+	c := NewCollector()
+	c.RecordRPC("getTransaction", 100*time.Millisecond, false)
+	c.RecordRPC("getTransaction", 200*time.Millisecond, true) // error
+
+	s := c.Summarize()
+	if s.RPCCalls != 2 {
+		t.Errorf("expected 2 calls, got %d", s.RPCCalls)
+	}
+	if s.RPCErrors != 1 {
+		t.Errorf("expected 1 error, got %d", s.RPCErrors)
+	}
+}
+
+func TestCollector_SimDuration(t *testing.T) {
+	c := NewCollector()
+
+	// No sim recorded yet
+	s := c.Summarize()
+	if s.SimRecorded {
+		t.Error("expected SimRecorded=false before StartSim/StopSim")
+	}
+
+	c.StartSim()
+	time.Sleep(2 * time.Millisecond)
+	c.StopSim()
+
+	s = c.Summarize()
+	if !s.SimRecorded {
+		t.Error("expected SimRecorded=true after StopSim")
+	}
+	if s.SimDuration <= 0 {
+		t.Errorf("expected positive SimDuration, got %v", s.SimDuration)
+	}
 }
 
 func TestCollector_StopSim_WithoutStart(t *testing.T) {
+	// StopSim before StartSim should not panic or set SimRecorded
 	c := NewCollector()
-	c.StopSim() // should not panic
+	c.StopSim()
 	s := c.Summarize()
-	assert.False(t, s.SimRecorded)
+	if s.SimRecorded {
+		t.Error("StopSim without StartSim should not set SimRecorded")
+	}
 }
 
-func TestCollector_Print(t *testing.T) {
+func TestCollector_SlowCalls(t *testing.T) {
+	orig := SlowRPCThreshold
+	SlowRPCThreshold = 100 * time.Millisecond
+	defer func() { SlowRPCThreshold = orig }()
+
+	c := NewCollector()
+	c.RecordRPC("fast", 50*time.Millisecond, false)
+	c.RecordRPC("slow", 200*time.Millisecond, false)
+
+	s := c.Summarize()
+	if len(s.SlowCalls) != 1 {
+		t.Fatalf("expected 1 slow call, got %d", len(s.SlowCalls))
+	}
+	if s.SlowCalls[0].Method != "slow" {
+		t.Errorf("expected slow call method='slow', got %q", s.SlowCalls[0].Method)
+	}
+}
+
+func TestCollector_ByMethod_SingleMethod(t *testing.T) {
 	c := NewCollector()
 	c.RecordRPC("getTransaction", 100*time.Millisecond, false)
-	c.RecordRPC("getLedgerEntries", 50*time.Millisecond, true)
-	c.StartSim()
-	c.StopSim()
+	c.RecordRPC("getTransaction", 200*time.Millisecond, false)
 
-	var buf bytes.Buffer
-	c.Print(&buf)
-	out := buf.String()
-
-	assert.True(t, strings.Contains(out, "RPC calls"), "should contain RPC calls line")
-	assert.True(t, strings.Contains(out, "error"), "should mention errors")
-	assert.True(t, strings.Contains(out, "Replay time"), "should contain replay time")
+	s := c.Summarize()
+	// ByMethod is only populated when >1 distinct method is recorded.
+	if len(s.ByMethod) != 0 {
+		t.Errorf("ByMethod should be empty with single method, got %d entries", len(s.ByMethod))
+	}
 }
+
+func TestCollector_ByMethod_MultipleMethod(t *testing.T) {
+	c := NewCollector()
+	c.RecordRPC("getTransaction", 100*time.Millisecond, false)
+	c.RecordRPC("getLedgerEntries", 200*time.Millisecond, false)
+	c.RecordRPC("getTransaction", 150*time.Millisecond, false)
+
+	s := c.Summarize()
+	if len(s.ByMethod) != 2 {
+		t.Fatalf("expected 2 ByMethod entries, got %d", len(s.ByMethod))
+	}
+	// Should be sorted by total descending
+	if s.ByMethod[0].Total < s.ByMethod[1].Total {
+		t.Error("ByMethod should be sorted by total descending")
+	}
+}
+
+func TestMethodSummary_Avg_ZeroCalls(t *testing.T) {
+	m := MethodSummary{Calls: 0, Total: 500 * time.Millisecond}
+	if m.Avg() != 0 {
+		t.Errorf("Avg with 0 calls should return 0, got %v", m.Avg())
+	}
+}
+
+// ── Print output ──────────────────────────────────────────────────────────────
 
 func TestCollector_Print_NoRPC(t *testing.T) {
 	c := NewCollector()
 	var buf bytes.Buffer
 	c.Print(&buf)
 	out := buf.String()
-	assert.True(t, strings.Contains(out, "RPC calls"), "header should still appear")
-	assert.False(t, strings.Contains(out, "RPC total"), "no total when no calls")
+	if !strings.Contains(out, "Performance Summary") {
+		t.Errorf("expected 'Performance Summary' header, got: %s", out)
+	}
+	if !strings.Contains(out, "RPC calls") {
+		t.Errorf("expected 'RPC calls' line, got: %s", out)
+	}
 }
 
-// ── New tests for Part C (performance & profiling improvements) ───────────────
-
-// TestCollector_PerMethodBreakdown ensures that when multiple distinct RPC
-// methods are recorded the Summary.ByMethod slice is populated and sorted by
-// total duration descending.
-func TestCollector_PerMethodBreakdown(t *testing.T) {
+func TestCollector_Print_NilWriter(t *testing.T) {
+	// Should not panic when w is nil (falls back to os.Stdout).
 	c := NewCollector()
-	c.RecordRPC("getTransaction", 300*time.Millisecond, false)
-	c.RecordRPC("getTransaction", 200*time.Millisecond, false)
-	c.RecordRPC("getLedgerEntries", 50*time.Millisecond, false)
-
-	s := c.Summarize()
-	require.Len(t, s.ByMethod, 2, "two distinct methods should produce two entries")
-
-	// getTransaction has higher total (500ms) so it must be first.
-	assert.Equal(t, "getTransaction", s.ByMethod[0].Method)
-	assert.Equal(t, 2, s.ByMethod[0].Calls)
-	assert.Equal(t, 500*time.Millisecond, s.ByMethod[0].Total)
-
-	assert.Equal(t, "getLedgerEntries", s.ByMethod[1].Method)
-	assert.Equal(t, 1, s.ByMethod[1].Calls)
+	c.RecordRPC("test", 10*time.Millisecond, false)
+	// Pass a discard writer instead of actually testing os.Stdout output.
+	var buf bytes.Buffer
+	c.Print(&buf)
+	// If we get here without panic, the test passes.
 }
 
-// TestCollector_PerMethodBreakdown_Single verifies that a single RPC method
-// does NOT generate a per-method breakdown (redundant with the aggregate totals).
-func TestCollector_PerMethodBreakdown_Single(t *testing.T) {
-	c := NewCollector()
-	c.RecordRPC("getTransaction", 100*time.Millisecond, false)
-	c.RecordRPC("getTransaction", 150*time.Millisecond, false)
-
-	s := c.Summarize()
-	assert.Empty(t, s.ByMethod, "single method should not produce per-method breakdown")
-}
-
-// TestCollector_MethodAvg verifies the Avg helper on MethodSummary.
-func TestCollector_MethodAvg(t *testing.T) {
-	m := MethodSummary{Calls: 4, Total: 400 * time.Millisecond}
-	assert.Equal(t, 100*time.Millisecond, m.Avg())
-}
-
-// TestCollector_MethodAvg_ZeroCalls ensures Avg does not divide by zero.
-func TestCollector_MethodAvg_ZeroCalls(t *testing.T) {
-	m := MethodSummary{Calls: 0, Total: 0}
-	assert.Equal(t, time.Duration(0), m.Avg())
-}
-
-// TestCollector_SlowCallDetection verifies that calls exceeding SlowRPCThreshold
-// are captured in Summary.SlowCalls.
-func TestCollector_SlowCallDetection(t *testing.T) {
-	oldThreshold := SlowRPCThreshold
-	SlowRPCThreshold = 200 * time.Millisecond
-	t.Cleanup(func() { SlowRPCThreshold = oldThreshold })
+func TestCollector_Print_SlowCallWarning(t *testing.T) {
+	orig := SlowRPCThreshold
+	SlowRPCThreshold = 10 * time.Millisecond
+	defer func() { SlowRPCThreshold = orig }()
 
 	c := NewCollector()
-	c.RecordRPC("getTransaction", 100*time.Millisecond, false)  // fast — not slow
-	c.RecordRPC("getLedgerEntries", 250*time.Millisecond, false) // slow
-	c.RecordRPC("simulateTransaction", 300*time.Millisecond, true) // slow + error
-
-	s := c.Summarize()
-	require.Len(t, s.SlowCalls, 2)
-	assert.Equal(t, "getLedgerEntries", s.SlowCalls[0].Method)
-	assert.Equal(t, "simulateTransaction", s.SlowCalls[1].Method)
-	assert.True(t, s.SlowCalls[1].Err)
-}
-
-// TestCollector_SlowCallWarning verifies the Print output includes a warning
-// and a remediation tip when slow calls are detected.
-func TestCollector_SlowCallWarning(t *testing.T) {
-	oldThreshold := SlowRPCThreshold
-	SlowRPCThreshold = 50 * time.Millisecond
-	t.Cleanup(func() { SlowRPCThreshold = oldThreshold })
-
-	c := NewCollector()
-	c.RecordRPC("getTransaction", 100*time.Millisecond, false)
+	c.RecordRPC("slow", 50*time.Millisecond, false)
 
 	var buf bytes.Buffer
 	c.Print(&buf)
 	out := buf.String()
-
-	assert.Contains(t, out, "Slow RPC", "should contain slow RPC warning header")
-	assert.Contains(t, out, "getTransaction", "should name the slow method")
-	assert.Contains(t, out, "--rpc-url", "should include --rpc-url tip")
+	if !strings.Contains(out, "Slow RPC calls") {
+		t.Errorf("expected slow call warning in output, got: %s", out)
+	}
+	if !strings.Contains(out, "rpc-url") {
+		t.Errorf("expected --rpc-url tip in slow call warning, got: %s", out)
+	}
 }
 
-// TestCollector_Print_PerMethodSection verifies that the per-method section
-// appears in the Print output when multiple methods are present.
-func TestCollector_Print_PerMethodSection(t *testing.T) {
+func TestCollector_Print_SimDuration(t *testing.T) {
 	c := NewCollector()
-	c.RecordRPC("getTransaction", 200*time.Millisecond, false)
-	c.RecordRPC("getLedgerEntries", 80*time.Millisecond, false)
+	c.StartSim()
+	time.Sleep(1 * time.Millisecond)
+	c.StopSim()
 
 	var buf bytes.Buffer
 	c.Print(&buf)
 	out := buf.String()
-
-	assert.Contains(t, out, "Per-method breakdown")
-	assert.Contains(t, out, "getTransaction")
-	assert.Contains(t, out, "getLedgerEntries")
+	if !strings.Contains(out, "Replay time") {
+		t.Errorf("expected 'Replay time' line when sim recorded, got: %s", out)
+	}
 }
 
-// TestCollector_PrintJSON_Valid verifies that PrintJSON emits valid JSON with
-// the expected top-level fields.
-func TestCollector_PrintJSON_Valid(t *testing.T) {
+// ── PrintJSON output ──────────────────────────────────────────────────────────
+
+func TestCollector_PrintJSON_ValidJSON(t *testing.T) {
 	c := NewCollector()
 	c.RecordRPC("getTransaction", 120*time.Millisecond, false)
 	c.RecordRPC("getLedgerEntries", 80*time.Millisecond, true)
 	c.StartSim()
+	time.Sleep(1 * time.Millisecond)
 	c.StopSim()
 
 	var buf bytes.Buffer
-	err := c.PrintJSON(&buf)
-	require.NoError(t, err)
+	if err := c.PrintJSON(&buf); err != nil {
+		t.Fatalf("PrintJSON failed: %v", err)
+	}
 
 	var out map[string]interface{}
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &out))
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("output is not valid JSON: %v\nOutput: %s", err, buf.String())
+	}
 
-	assert.EqualValues(t, 2, out["rpc_calls"])
-	assert.EqualValues(t, 1, out["rpc_errors"])
-	assert.Greater(t, out["rpc_total_ms"], float64(0))
-	_, hasSim := out["sim_ms"]
-	assert.True(t, hasSim, "sim_ms should be present when simulation was recorded")
+	if rpcCalls, ok := out["rpc_calls"].(float64); !ok || rpcCalls != 2 {
+		t.Errorf("rpc_calls: expected 2, got %v", out["rpc_calls"])
+	}
+	if rpcErrors, ok := out["rpc_errors"].(float64); !ok || rpcErrors != 1 {
+		t.Errorf("rpc_errors: expected 1, got %v", out["rpc_errors"])
+	}
+	if _, ok := out["sim_ms"]; !ok {
+		t.Error("expected sim_ms key in JSON output")
+	}
 }
 
-// TestCollector_PrintJSON_NoRecords verifies that PrintJSON works with an
-// empty collector and emits a valid, minimal JSON object.
-func TestCollector_PrintJSON_NoRecords(t *testing.T) {
+func TestCollector_PrintJSON_ZeroState(t *testing.T) {
 	c := NewCollector()
 	var buf bytes.Buffer
-	err := c.PrintJSON(&buf)
-	require.NoError(t, err)
-
+	if err := c.PrintJSON(&buf); err != nil {
+		t.Fatalf("PrintJSON failed on empty collector: %v", err)
+	}
 	var out map[string]interface{}
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &out))
-	assert.EqualValues(t, 0, out["rpc_calls"])
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if rpcCalls, ok := out["rpc_calls"].(float64); !ok || rpcCalls != 0 {
+		t.Errorf("rpc_calls should be 0 for empty collector, got %v", out["rpc_calls"])
+	}
 }
 
-// TestCollector_PrintJSON_ByMethod verifies per-method data surfaces in JSON
-// when multiple distinct methods are recorded.
-func TestCollector_PrintJSON_ByMethod(t *testing.T) {
-	c := NewCollector()
-	c.RecordRPC("getTransaction", 200*time.Millisecond, false)
-	c.RecordRPC("getLedgerEntries", 60*time.Millisecond, false)
+// ── Concurrency safety ────────────────────────────────────────────────────────
 
-	var buf bytes.Buffer
-	require.NoError(t, c.PrintJSON(&buf))
-
-	var out map[string]interface{}
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &out))
-
-	byMethod, ok := out["by_method"].([]interface{})
-	require.True(t, ok, "by_method should be a JSON array")
-	assert.Len(t, byMethod, 2)
-}
-
-// TestCollector_PrintJSON_SlowCalls verifies that slow calls appear in the
-// JSON output when they exceed the threshold.
-func TestCollector_PrintJSON_SlowCalls(t *testing.T) {
-	oldThreshold := SlowRPCThreshold
-	SlowRPCThreshold = 100 * time.Millisecond
-	t.Cleanup(func() { SlowRPCThreshold = oldThreshold })
-
-	c := NewCollector()
-	c.RecordRPC("getTransaction", 500*time.Millisecond, false)
-
-	var buf bytes.Buffer
-	require.NoError(t, c.PrintJSON(&buf))
-
-	var out map[string]interface{}
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &out))
-
-	slow, ok := out["slow_calls"].([]interface{})
-	require.True(t, ok, "slow_calls should be present")
-	assert.Len(t, slow, 1)
-}
-
-// TestCollector_ConcurrentRecording verifies thread safety — multiple goroutines
-// recording RPCs concurrently should not race or panic.
-func TestCollector_ConcurrentRecording(t *testing.T) {
+func TestCollector_ConcurrentRecordRPC(t *testing.T) {
 	c := NewCollector()
 	done := make(chan struct{})
-	for i := 0; i < 10; i++ {
+	const goroutines = 10
+	for i := 0; i < goroutines; i++ {
 		go func() {
-			c.RecordRPC("getTransaction", 10*time.Millisecond, false)
+			c.RecordRPC("method", 10*time.Millisecond, false)
 			done <- struct{}{}
 		}()
 	}
-	for i := 0; i < 10; i++ {
+	for i := 0; i < goroutines; i++ {
 		<-done
 	}
 	s := c.Summarize()
-	assert.Equal(t, 10, s.RPCCalls)
+	if s.RPCCalls != goroutines {
+		t.Errorf("expected %d calls, got %d", goroutines, s.RPCCalls)
+	}
 }

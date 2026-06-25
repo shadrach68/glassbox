@@ -18,18 +18,39 @@ import (
 )
 
 var (
-	traceFile        string
-	traceThemeFlag   string
-	tracePrint       bool
-	traceNoColor     bool
-	traceExportSVG   string
-	traceOutputJSON  string
-	traceExportPath   string
-	traceExportFormat string
-	traceGasModelPath string
-	traceComments     []string
-	traceMetadata     []string
+	traceFile            string
+	traceThemeFlag       string
+	tracePrint           bool
+	traceNoColor         bool
+	traceExportSVG       string
+	traceOutputJSON      string
+	traceExportPath      string
+	traceExportFormat    string
+	traceExportMarkdown  string
+	traceAnnotationsFlag string
+	traceGasModelPath    string
+	traceComments        []string
+	traceMetadata        []string
+	traceVerbosity       string
+	traceDryRunFlag      bool
+	traceShowTimingFlag  bool
+	traceForceFlag       bool
+	traceFormatAlias     string // --format is a user-friendly alias for --export-format
+
+	// eventSchemas is optionally populated by other subsystems (e.g. schema
+	// loading) before the trace command runs. Nil is safe — PrintExecutionTrace
+	// handles the absence gracefully.
+	eventSchemas *trace.EventSchemaSet
 )
+
+// validTraceExportFormats lists the formats accepted by --export-format / --format.
+var validTraceExportFormats = map[string]bool{
+	"html":     true,
+	"markdown": true,
+	"md":       true,
+	"json":     true,
+	"text":     true,
+}
 
 var traceCmd = &cobra.Command{
 	Use:     "trace <trace-file>",
@@ -44,73 +65,276 @@ The trace viewer allows you to:
 - View memory and host state changes
 
 Use --print for a one-shot, colour-coded ASCII tree report suitable for CI
-logs or piping to other tools. Add --no-color to disable ANSI colours.`,
+logs or piping to other tools. Add --no-color to disable ANSI colours.
+
+Export formats (--export / --format):
+  html      — interactive HTML page, best for manual analysis in a browser
+  markdown  — shareable Markdown report, best for issues and chat
+  json      — machine-readable JSON, best for CI/CD and automated processing
+  text      — plain text, best for simple logging or piping
+
+Performance notes:
+  Large traces (>5 000 steps) can produce slow HTML rendering.
+  Use --format json for large traces or CI pipelines.
+  Use --trace-verbosity summary to reduce output size significantly.
+  Use --dry-run to validate parameters without writing any files.`,
 	Example: `  # Open the interactive trace viewer
   glassbox trace execution.json
 
-  # Load a trace via the --file flag
-  glassbox trace --file debug_trace.json
+  # Validate parameters without writing any output (dry-run)
+  glassbox trace --dry-run --export trace.html execution.json
+
+  # Export trace as interactive HTML
+  glassbox trace --export trace.html --format html execution.json
+
+  # Export as JSON (best for large traces and CI pipelines)
+  glassbox trace --export trace.json --format json execution.json
+
+  # Export as markdown for sharing in chat or issue trackers
+  glassbox trace --export trace.md --format markdown execution.json
+
+  # Export as plain text
+  glassbox trace --export trace.txt --format text execution.json
 
   # Print a colour-coded ASCII tree and exit (suitable for CI logs)
   glassbox trace --print execution.json
 
-  # Print without ANSI colours (pipe-friendly)
-  glassbox trace --print --no-color execution.json | less
-
-  # Force dark-mode colour palette
-  glassbox trace --theme dark execution.json
-
-  # Export trace as deterministic JSON for diffing or archiving
-  glassbox trace --output-json trace_export.json execution.json
+  # Print with timing info
+  glassbox trace --print --show-timing execution.json
 
   # Export call graph as SVG
   glassbox trace --export-svg callgraph.svg execution.json
 
-  # Export trace as markdown for sharing in chat or issue trackers
-  glassbox trace --export-markdown trace.md execution.json
+  # Export with comments and session metadata
+  glassbox trace --export report.md --format markdown \
+    --comment "Reviewed with Alice" --meta env=testnet execution.json
 
-  # Export trace as plain text
-  glassbox trace --export trace.txt --export-format text execution.json`,
+  # Force overwrite of an existing output file
+  glassbox trace --export trace.html --force execution.json`,
 	Args: cobra.MaximumNArgs(1),
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		var failures []string
+
+		// --format is an alias for --export-format; merge the two.
+		// If the user typed --format instead of --export-format, honour it.
+		if cmd.Flags().Changed("format") && !cmd.Flags().Changed("export-format") {
+			traceExportFormat = traceFormatAlias
+		}
+
+		// --dry-run: validate but don't write anything.
+		// It implies an export target must be specified (otherwise nothing to validate).
+		if traceDryRunFlag {
+			if traceExportPath == "" && traceExportMarkdown == "" && traceOutputJSON == "" && traceExportSVG == "" {
+				failures = append(failures, "--dry-run requires an export target (--export, --output-json, or --export-svg)\n"+
+					"  Fix: add an export flag, e.g. --export trace.html --format html")
+			}
+		}
+
+		// Validate --export-format (and its --format alias) when --export is set.
+		if traceExportPath != "" {
+			normalised := strings.ToLower(strings.TrimSpace(traceExportFormat))
+			if !validTraceExportFormats[normalised] {
+				failures = append(failures, fmt.Sprintf(
+					"invalid --format %q — must be one of: html, markdown, json, text\n"+
+						"  Fix: use --format html (interactive), markdown (shareable), json (machine-readable), or text (plain)",
+					traceExportFormat,
+				))
+			}
+			// Export path must not look like a bare directory.
+			if strings.HasSuffix(traceExportPath, "/") || strings.HasSuffix(traceExportPath, "\\") {
+				failures = append(failures, fmt.Sprintf(
+					"--export %q looks like a directory path; provide a full file path\n"+
+						"  Fix: specify a filename (e.g. --export ./traces/output.html)\n"+
+						"  Example: glassbox trace --export ./traces/report.html execution.json",
+					traceExportPath,
+				))
+			}
+		}
+
+		// Validate --export-markdown path (deprecated alias).
+		if traceExportMarkdown != "" {
+			if strings.HasSuffix(traceExportMarkdown, "/") || strings.HasSuffix(traceExportMarkdown, "\\") {
+				failures = append(failures, fmt.Sprintf(
+					"--export-markdown %q looks like a directory path; provide a full file path\n"+
+						"  Fix: specify a filename (e.g. --export-markdown ./traces/report.md)",
+					traceExportMarkdown,
+				))
+			}
+		}
+
+		// Validate --output-json path.
+		if traceOutputJSON != "" {
+			if strings.HasSuffix(traceOutputJSON, "/") || strings.HasSuffix(traceOutputJSON, "\\") {
+				failures = append(failures, fmt.Sprintf(
+					"--output-json %q looks like a directory path; provide a full file path\n"+
+						"  Fix: specify a filename (e.g. --output-json ./traces/output.json)",
+					traceOutputJSON,
+				))
+			}
+		}
+
+		// Validate --export-svg path.
+		if traceExportSVG != "" {
+			if strings.HasSuffix(traceExportSVG, "/") || strings.HasSuffix(traceExportSVG, "\\") {
+				failures = append(failures, fmt.Sprintf(
+					"--export-svg %q looks like a directory path; provide a full file path\n"+
+						"  Fix: specify a filename (e.g. --export-svg ./traces/callgraph.svg)",
+					traceExportSVG,
+				))
+			}
+		}
+
+		// --export and --print are mutually exclusive.
+		if traceExportPath != "" && tracePrint {
+			failures = append(failures, "cannot specify both --export and --print\n"+
+				"  Fix: use --export to write to a file, or --print to output to stdout — not both")
+		}
+
+		// --export-markdown and --export are mutually exclusive.
+		if traceExportMarkdown != "" && traceExportPath != "" {
+			failures = append(failures, "cannot specify both --export-markdown and --export\n"+
+				"  Fix: use --export --format markdown for the same result as --export-markdown")
+		}
+
+		// Validate --trace-verbosity when set.
+		if traceVerbosity != "" {
+			if _, err := trace.ParseVerbosity(traceVerbosity); err != nil {
+				failures = append(failures, fmt.Sprintf(
+					"invalid --trace-verbosity %q — must be one of: summary, normal, verbose\n"+
+						"  Fix: use --trace-verbosity normal (default), summary (minimal), or verbose (detailed)",
+					traceVerbosity,
+				))
+			}
+		}
+
+		// Validate --annotations file exists when set.
+		// NOTE: annotation loading (LoadAnnotationFile / BuildTraceNodeTree)
+		// is not yet implemented. The flag is accepted and validated for path
+		// correctness so the UI is consistent, but the overlay is skipped at
+		// runtime with a warning until the helper functions are available.
+		if traceAnnotationsFlag != "" {
+			if _, statErr := os.Stat(traceAnnotationsFlag); os.IsNotExist(statErr) {
+				failures = append(failures, fmt.Sprintf(
+					"--annotations: file not found: %q\n"+
+						"  Fix: provide a valid path to an annotations JSON file",
+					traceAnnotationsFlag,
+				))
+			}
+		}
+
+		// Validate --gas-model file exists when set.
+		if traceGasModelPath != "" {
+			if _, statErr := os.Stat(traceGasModelPath); os.IsNotExist(statErr) {
+				failures = append(failures, fmt.Sprintf(
+					"--gas-model: file not found: %q\n"+
+						"  Fix: provide a valid path to a gas model JSON file",
+					traceGasModelPath,
+				))
+			}
+		}
+
+		if len(failures) == 1 {
+			return errors.WrapValidationError(failures[0])
+		}
+		if len(failures) > 1 {
+			lines := make([]string, 0, len(failures)+1)
+			lines = append(lines, fmt.Sprintf("%d trace command validation error(s):", len(failures)))
+			for i, f := range failures {
+				lines = append(lines, fmt.Sprintf("  %d. %s", i+1, f))
+			}
+			return errors.WrapValidationError(strings.Join(lines, "\n"))
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Apply theme if specified, otherwise auto-detect
+		// Apply theme if specified, otherwise auto-detect.
 		if traceThemeFlag != "" {
 			visualizer.SetTheme(visualizer.Theme(traceThemeFlag))
 		} else {
 			visualizer.SetTheme(visualizer.DetectTheme())
 		}
 
+		// Resolve the trace file path (positional arg or --file flag).
 		var filename string
 		if len(args) > 0 {
 			filename = args[0]
 		} else if traceFile != "" {
 			filename = traceFile
 		} else {
-			return errors.WrapCliArgumentRequired("file")
+			return errors.WrapValidationError(
+				"trace file is required\n" +
+					"  Usage: glassbox trace <trace-file>\n" +
+					"  Or:    glassbox trace --file <trace-file>\n" +
+					"  Run 'glassbox trace --help' for all available options")
 		}
 
-		// Check if file exists
+		// Verify the trace file exists and is readable before doing any work.
 		if _, err := os.Stat(filename); os.IsNotExist(err) {
-			return errors.WrapValidationError(fmt.Sprintf("trace file not found: %s", filename))
+			return errors.WrapValidationError(fmt.Sprintf(
+				"trace file not found: %q\n"+
+					"  Fix: verify the path is correct and the file exists\n"+
+					"  Tip: trace files are produced by 'glassbox debug --trace-output <file>'",
+				filename,
+			))
 		}
 
-		// Load trace from file
+		var loadStart time.Time
+		if traceShowTimingFlag {
+			loadStart = time.Now()
+		}
+
 		data, err := os.ReadFile(filename)
 		if err != nil {
-			return errors.WrapValidationError(fmt.Sprintf("failed to read trace file: %v", err))
+			return errors.WrapValidationError(fmt.Sprintf(
+				"failed to read trace file %q: %v\n"+
+					"  Fix: ensure you have read permissions for the file",
+				filename, err,
+			))
 		}
 
 		executionTrace, err := trace.FromJSON(data)
 		if err != nil {
-			return errors.WrapUnmarshalFailed(err, "trace")
+			return errors.WrapUnmarshalFailed(err,
+				fmt.Sprintf(
+					"failed to parse trace file %q — the file may be corrupted or not a valid Glassbox trace\n"+
+						"  Fix: verify the file is valid JSON with 'jq . %q'\n"+
+						"  Tip: re-export the trace with 'glassbox debug --trace-output <file>'",
+					filename, filename,
+				))
 		}
+
+		if traceShowTimingFlag {
+			fmt.Fprintf(cmd.ErrOrStderr(), "  load:   %s (%d steps, %d bytes)\n",
+				time.Since(loadStart).Round(time.Millisecond), len(executionTrace.States), len(data))
+		}
+
+		// Emit size/performance warnings for large traces via the compatibility
+		// validator so users know before the export starts.
+		if traceExportPath != "" || traceExportMarkdown != "" {
+			targetFmt := traceExportFormat
+			if traceExportMarkdown != "" {
+				targetFmt = "markdown"
+			}
+			compatWarnings := trace.ValidateFormatCompatibility(executionTrace, targetFmt, trace.DefaultCompatibilityOptions())
+			for _, w := range compatWarnings {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s\n", w)
+			}
+		}
+
+		// Annotate with gas model estimates if requested.
 		if traceGasModelPath != "" {
 			model, err := gasmodel.ParseGasModel(traceGasModelPath)
 			if err != nil {
-				return errors.WrapValidationError(fmt.Sprintf("failed to load gas model: %v", err))
+				return errors.WrapValidationError(fmt.Sprintf(
+					"failed to load gas model from %q: %v\n"+
+						"  Fix: verify the gas model JSON file is valid",
+					traceGasModelPath, err,
+				))
 			}
 			trace.AnnotateExecutionCosts(executionTrace, nil, model)
 		}
+
+		// Merge any --comment / --meta annotations supplied on the command line.
 		if len(traceComments) > 0 || len(traceMetadata) > 0 {
 			opts, err := traceExportOptions()
 			if err != nil {
@@ -125,104 +349,209 @@ logs or piping to other tools. Add --no-color to disable ANSI colours.`,
 			}
 		}
 
-		// --output-json: write deterministic schema'd JSON export and exit
-		if traceOutputJSON != "" {
-			data, err := executionTrace.ExportJSON("1.0", time.Now())
-			if err != nil {
-				return errors.WrapValidationError(fmt.Sprintf("failed to export trace json: %v", err))
+		// --dry-run: validate parameters and compatibility but write nothing.
+		if traceDryRunFlag {
+			issues := trace.ValidateExecutionTrace(executionTrace)
+			if len(issues) > 0 {
+				for _, issue := range issues {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s\n", issue)
+				}
 			}
-			if err := os.WriteFile(traceOutputJSON, data, 0644); err != nil {
-				return errors.WrapValidationError(fmt.Sprintf("failed to save JSON: %v", err))
+			targetFmt := traceExportFormat
+			if traceExportMarkdown != "" {
+				targetFmt = "markdown"
 			}
-			fmt.Printf("%s Trace exported to: %s\n", visualizer.Symbol("success"), traceOutputJSON)
+			if err := trace.ValidateTraceExportParams(executionTrace, targetFmt, traceExportPath, trace.ExportOptions{}); err != nil {
+				return errors.WrapValidationError(fmt.Sprintf("dry-run validation failed: %v", err))
+			}
+			fmt.Printf("%s Dry-run complete — %d step(s), format %q validated. No files written.\n",
+				visualizer.Symbol("success"), len(executionTrace.States), targetFmt)
 			return nil
 		}
 
-		verbosity, err := trace.ParseVerbosity(traceVerbosity)
-		if err != nil {
-			return errors.WrapValidationError(err.Error())
+		// --output-json: write deterministic schema'd JSON export and exit.
+		if traceOutputJSON != "" {
+			if !traceForceFlag {
+				if _, statErr := os.Stat(traceOutputJSON); statErr == nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %q already exists and will be overwritten. Use --force to suppress this warning.\n", traceOutputJSON)
+				}
+			}
+			var jsonStart time.Time
+			if traceShowTimingFlag {
+				jsonStart = time.Now()
+			}
+			jsonData, err := executionTrace.ExportJSON("1.0", time.Now())
+			if err != nil {
+				return errors.WrapValidationError(fmt.Sprintf(
+					"failed to serialize trace as JSON: %v\n"+
+						"  This may indicate the trace contains non-serializable data",
+					err,
+				))
+			}
+			if err := os.WriteFile(traceOutputJSON, jsonData, 0o644); err != nil {
+				return errors.WrapValidationError(fmt.Sprintf(
+					"failed to write JSON export to %q: %v\n"+
+						"  Fix: ensure you have write permissions and sufficient disk space",
+					traceOutputJSON, err,
+				))
+			}
+			sizeStr := humanFileSize(int64(len(jsonData)))
+			if traceShowTimingFlag {
+				fmt.Fprintf(cmd.ErrOrStderr(), "  export: %s\n", time.Since(jsonStart).Round(time.Millisecond))
+			}
+			fmt.Printf("%s Trace exported to: %s (%s)\n", visualizer.Symbol("success"), traceOutputJSON, sizeStr)
+			return nil
 		}
-		executionTrace = trace.FilterExecutionTrace(executionTrace, verbosity)
 
-		// --print: render a rich ASCII tree report then exit (non-interactive)
+		// Apply verbosity filter before rendering.
+		verbosityLevel, err := trace.ParseVerbosity(traceVerbosity)
+		if err != nil {
+			return errors.WrapValidationError(fmt.Sprintf(
+				"invalid --trace-verbosity %q — must be one of: summary, normal, verbose\n"+
+					"  Fix: use --trace-verbosity normal (default), summary (minimal), or verbose (detailed)",
+				traceVerbosity,
+			))
+		}
+		executionTrace = trace.FilterExecutionTrace(executionTrace, verbosityLevel)
+
+		// --print: render a rich ASCII tree report then exit (non-interactive).
 		if tracePrint {
 			if traceAnnotationsFlag != "" {
-				annMap, annErr := trace.LoadAnnotationFile(traceAnnotationsFlag)
-				if annErr != nil {
-					return errors.WrapValidationError(fmt.Sprintf("failed to load annotations: %v", annErr))
-				}
-				root := trace.BuildTraceNodeTree(executionTrace)
-				trace.MergeAnnotations(root, annMap)
-				trace.PrintTraceTree(root, trace.PrintOptions{NoColor: traceNoColor})
-				return nil
+				// Annotation overlay for printed tree output requires LoadAnnotationFile
+				// and BuildTraceNodeTree — these are registered on the --annotations
+				// flag but the underlying helpers are not yet available in this build.
+				// Warn the user rather than silently ignoring the flag.
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"Warning: --annotations is registered but the annotation loader is not yet implemented in this build; the flag will be ignored.\n"+
+						"  The trace will be printed without annotation overlay.\n",
+				)
+			}
+			var printStart time.Time
+			if traceShowTimingFlag {
+				printStart = time.Now()
 			}
 			opts := trace.PrintOptions{
 				NoColor:      traceNoColor,
 				EventSchemas: eventSchemas,
 			}
 			trace.PrintExecutionTrace(executionTrace, opts)
+			if traceShowTimingFlag {
+				fmt.Fprintf(cmd.ErrOrStderr(), "  render: %s\n", time.Since(printStart).Round(time.Millisecond))
+			}
 			return nil
 		}
 
-		// --output-json: write deterministic schema'd JSON export and exit
-		if traceOutputJSON != "" {
-			data, err := executionTrace.ExportJSON("1.0", time.Now())
-			if err != nil {
-				return errors.WrapValidationError(fmt.Sprintf("failed to export trace json: %v", err))
-			}
-			if err := os.WriteFile(traceOutputJSON, data, 0644); err != nil {
-				return errors.WrapValidationError(fmt.Sprintf("failed to save JSON: %v", err))
-			}
-			fmt.Printf("%s Trace exported to: %s\n", visualizer.Symbol("success"), traceOutputJSON)
-			return nil
-		}
-
-		// --export-markdown: write markdown trace export and exit
+		// --export-markdown: deprecated alias — emit a deprecation notice.
 		if traceExportMarkdown != "" {
-			if err := trace.ExportExecutionTrace(executionTrace, "markdown", traceExportMarkdown); err != nil {
-				return errors.WrapValidationError(fmt.Sprintf("failed to export trace markdown: %v", err))
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"Deprecated: --export-markdown is deprecated; use --export %s --format markdown instead.\n",
+				traceExportMarkdown,
+			)
+			if !traceForceFlag {
+				if _, statErr := os.Stat(traceExportMarkdown); statErr == nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %q already exists and will be overwritten. Use --force to suppress this warning.\n", traceExportMarkdown)
+				}
 			}
-			fmt.Printf("%s Trace exported to: %s\n", visualizer.Symbol("success"), traceExportMarkdown)
+			var mdStart time.Time
+			if traceShowTimingFlag {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Exporting %d steps as markdown...\n", len(executionTrace.States))
+				mdStart = time.Now()
+			}
+			if err := trace.ExportExecutionTrace(executionTrace, "markdown", traceExportMarkdown); err != nil {
+				return errors.WrapValidationError(fmt.Sprintf(
+					"failed to export trace as Markdown to %q: %v\n"+
+						"  Fix: ensure the output directory exists and you have write permissions",
+					traceExportMarkdown, err,
+				))
+			}
+			sizeStr := traceExportedFileSize(traceExportMarkdown)
+			if traceShowTimingFlag {
+				fmt.Fprintf(cmd.ErrOrStderr(), "  export: %s\n", time.Since(mdStart).Round(time.Millisecond))
+			}
+			fmt.Printf("%s Trace exported to: %s%s\n", visualizer.Symbol("success"), traceExportMarkdown, sizeStr)
 			return nil
 		}
 
-		// --export-svg: generate a call graph SVG and exit
+		// --export-svg: generate a call graph SVG and exit.
 		if traceExportSVG != "" {
 			if len(executionTrace.DiagnosticEvents) == 0 {
-				return errors.WrapValidationError("no diagnostic events found in trace; call graph with gas cannot be generated")
+				return errors.WrapValidationError(
+					"no diagnostic events found in trace — call graph cannot be generated\n" +
+						"  Possible causes:\n" +
+						"    - The trace was captured without diagnostic events\n" +
+						"    - The transaction did not call any contracts\n" +
+						"  Fix: re-run with a transaction that includes contract calls\n" +
+						"  Tip: use --trace-verbosity verbose when capturing the trace for maximum detail",
+				)
+			}
+			if !traceForceFlag {
+				if _, statErr := os.Stat(traceExportSVG); statErr == nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %q already exists and will be overwritten. Use --force to suppress this warning.\n", traceExportSVG)
+				}
 			}
 
-			// Load config to get MaxTraceDepth
 			maxDepth := 50
-
 			callTree, err := decoder.DecodeDiagnosticEvents(executionTrace.DiagnosticEvents, maxDepth)
 			if err != nil {
-				return errors.WrapValidationError(fmt.Sprintf("failed to decode call tree: %v", err))
+				return errors.WrapValidationError(fmt.Sprintf(
+					"failed to decode call tree from diagnostic events: %v\n"+
+						"  Fix: verify the trace file is complete and not corrupted",
+					err,
+				))
 			}
 			svg := visualizer.GenerateCallGraphSVG(callTree, maxDepth)
-			if err := os.WriteFile(traceExportSVG, []byte(svg), 0644); err != nil {
-				return errors.WrapValidationError(fmt.Sprintf("failed to save SVG: %v", err))
+			if err := os.WriteFile(traceExportSVG, []byte(svg), 0o644); err != nil {
+				return errors.WrapValidationError(fmt.Sprintf(
+					"failed to write SVG to %q: %v\n"+
+						"  Fix: ensure the output directory exists and you have write permissions",
+					traceExportSVG, err,
+				))
 			}
-			fmt.Printf("%s Call graph exported to: %s\n", visualizer.Symbol("success"), traceExportSVG)
+			sizeStr := humanFileSize(int64(len(svg)))
+			fmt.Printf("%s Call graph exported to: %s (%s)\n", visualizer.Symbol("success"), traceExportSVG, sizeStr)
 			return nil
 		}
 
+		// --export: write a trace report in the specified format and exit.
 		if traceExportPath != "" {
-			if tracePrint {
-				return errors.WrapValidationError("cannot specify both --export and --print")
+			if !traceForceFlag {
+				if _, statErr := os.Stat(traceExportPath); statErr == nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %q already exists and will be overwritten. Use --force to suppress this warning.\n", traceExportPath)
+				}
 			}
+
 			opts, err := traceExportOptions()
 			if err != nil {
 				return err
 			}
-			if err := trace.ExportExecutionTraceWithOptions(executionTrace, traceExportFormat, traceExportPath, opts); err != nil {
-				return errors.WrapValidationError(fmt.Sprintf("failed to export trace: %v", err))
+
+			// Emit a pre-export progress line so large exports don't appear to hang.
+			fmt.Fprintf(cmd.ErrOrStderr(), "Exporting %d steps as %s...\n", len(executionTrace.States), traceExportFormat)
+			var exportStart time.Time
+			if traceShowTimingFlag {
+				exportStart = time.Now()
 			}
-			fmt.Printf("%s Trace exported to: %s\n", visualizer.Symbol("success"), traceExportPath)
+
+			// Route through ExportWithCompatibility so size warnings and version
+			// information are correctly applied (bridges the gap between the
+			// lower-level ExportExecutionTraceWithOptions and the compatibility layer).
+			if err := trace.ExportWithCompatibility(executionTrace, traceExportFormat, traceExportPath, opts, trace.DefaultCompatibilityOptions()); err != nil {
+				return errors.WrapValidationError(fmt.Sprintf(
+					"failed to export trace as %s to %q: %v\n"+
+						"  Fix: ensure the output directory exists and you have write permissions",
+					traceExportFormat, traceExportPath, err,
+				))
+			}
+
+			sizeStr := traceExportedFileSize(traceExportPath)
+			if traceShowTimingFlag {
+				fmt.Fprintf(cmd.ErrOrStderr(), "  export: %s\n", time.Since(exportStart).Round(time.Millisecond))
+			}
+			fmt.Printf("%s Trace exported to: %s%s\n", visualizer.Symbol("success"), traceExportPath, sizeStr)
 			return nil
 		}
 
-		// Start interactive viewer
+		// Default: start the interactive viewer.
 		viewer := trace.NewInteractiveViewer(executionTrace)
 		return viewer.Start()
 	},
@@ -235,13 +564,29 @@ func init() {
 	traceCmd.Flags().BoolVar(&traceNoColor, "no-color", false, "Disable ANSI colour output (also honoured via NO_COLOR env var)")
 	traceCmd.Flags().StringVar(&traceExportSVG, "export-svg", "", "Export call graph as SVG to specified file")
 	traceCmd.Flags().StringVar(&traceOutputJSON, "output-json", "", "Export trace as deterministic JSON to specified file (includes schema_version)")
-	traceCmd.Flags().StringVar(&traceExportPath, "export", "", "Export trace report to a file")
-	traceCmd.Flags().StringVar(&traceExportFormat, "export-format", "html", "Trace export format (html, markdown)")
+	traceCmd.Flags().StringVar(&traceExportPath, "export", "", "Export trace report to a file (use with --format)")
+	traceCmd.Flags().StringVar(&traceExportFormat, "export-format", "html", "Trace export format: html, markdown, json, or text (use --format as an alias)")
+	traceCmd.Flags().StringVar(&traceFormatAlias, "format", "", "Export format alias for --export-format: html, markdown, json, or text")
+	traceCmd.Flags().StringVar(&traceExportMarkdown, "export-markdown", "", "Export trace as Markdown to specified file (deprecated: use --export --format markdown)")
+	traceCmd.Flags().StringVar(&traceAnnotationsFlag, "annotations", "", "Path to a JSON file containing step annotations to overlay on the trace")
 	traceCmd.Flags().StringVar(&traceGasModelPath, "gas-model", "", "Gas model JSON used to annotate contract call cost estimates")
+	traceCmd.Flags().StringVar(&traceVerbosity, "trace-verbosity", "normal", "Trace detail level: summary, normal, or verbose")
 	traceCmd.Flags().StringArrayVar(&traceComments, "comment", nil, "Comment to include in exported trace artifacts; repeatable")
 	traceCmd.Flags().StringArrayVar(&traceMetadata, "meta", nil, "Session metadata for exported trace artifacts in key=value form; repeatable")
+	traceCmd.Flags().BoolVar(&traceDryRunFlag, "dry-run", false, "Validate parameters and trace data without writing any files")
+	traceCmd.Flags().BoolVar(&traceForceFlag, "force", false, "Overwrite existing output files without prompting")
+	traceCmd.Flags().BoolVar(&traceShowTimingFlag, "show-timing", false, "Print load, render, and export timing to stderr")
 
 	_ = traceCmd.RegisterFlagCompletionFunc("theme", completeThemeFlag)
+	_ = traceCmd.RegisterFlagCompletionFunc("export-format", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"html", "markdown", "json", "text"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	_ = traceCmd.RegisterFlagCompletionFunc("format", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"html", "markdown", "json", "text"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	_ = traceCmd.RegisterFlagCompletionFunc("trace-verbosity", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"summary", "normal", "verbose"}, cobra.ShellCompDirectiveNoFileComp
+	})
 
 	rootCmd.AddCommand(traceCmd)
 }
@@ -251,7 +596,13 @@ func traceExportOptions() (trace.ExportOptions, error) {
 	for _, entry := range traceMetadata {
 		parts := strings.SplitN(entry, "=", 2)
 		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
-			return trace.ExportOptions{}, errors.WrapValidationError("--meta values must use key=value format")
+			return trace.ExportOptions{}, errors.WrapValidationError(
+				fmt.Sprintf(
+					"--meta value %q is not in key=value format\n"+
+						"  Fix: supply metadata as key=value pairs, e.g. --meta env=testnet --meta version=1.2",
+					entry,
+				),
+			)
 		}
 		metadata[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 	}

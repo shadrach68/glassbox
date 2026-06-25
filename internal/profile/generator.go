@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"text/template"
 
 	"github.com/dotandev/glassbox/internal/trace"
@@ -38,7 +39,27 @@ type SnapshotSummary struct {
 // and a Snapshot ID identifying the nearest snapshot, enabling click-to-jump navigation.
 func GenerateHTML(execTrace *trace.ExecutionTrace, w io.Writer) error {
 	if execTrace == nil {
-		return fmt.Errorf("execution trace is nil")
+		return fmt.Errorf("execution trace is nil — cannot generate flamegraph\n" +
+			"  Fix: ensure the simulation completed successfully before calling GenerateHTML\n" +
+			"  Tip: run 'glassbox debug --profile <tx-hash>' to generate a flamegraph automatically")
+	}
+	if w == nil {
+		return fmt.Errorf("writer is nil — cannot write flamegraph output\n" +
+			"  Fix: provide a valid io.Writer (e.g. a file or bytes.Buffer)")
+	}
+
+	// Warn when the trace carries no steps — the flamegraph will be empty but
+	// the HTML file is still valid (blank canvas).  Surface a hint rather than
+	// failing hard so callers can decide how to handle the situation.
+	if len(execTrace.States) == 0 {
+		fmt.Fprintf(os.Stderr,
+			"Warning: trace contains no execution steps — flamegraph will be empty.\n"+
+				"  Possible causes:\n"+
+				"    - The simulation produced no diagnostic events\n"+
+				"    - The trace was captured by an older simulator version\n"+
+				"  Tip: use 'glassbox profile --xdr <tx.xdr>' for a live gas report,\n"+
+				"       or re-run with 'glassbox debug --save-snapshots <file>'\n",
+		)
 	}
 
 	frames := buildFrames(execTrace)
@@ -46,16 +67,20 @@ func GenerateHTML(execTrace *trace.ExecutionTrace, w io.Writer) error {
 
 	framesJSON, err := json.Marshal(frames)
 	if err != nil {
-		return fmt.Errorf("failed to marshal frames: %w", err)
+		return fmt.Errorf("failed to marshal flamegraph frames: %w\n"+
+			"  This may indicate the trace contains non-serializable data (e.g. NaN or Inf gas values)\n"+
+			"  Fix: verify the trace was produced by a supported simulator version", err)
 	}
 	summariesJSON, err := json.Marshal(summaries)
 	if err != nil {
-		return fmt.Errorf("failed to marshal snapshots: %w", err)
+		return fmt.Errorf("failed to marshal snapshot summaries: %w\n"+
+			"  Fix: verify the trace snapshot data is valid", err)
 	}
 
 	tmpl, err := template.New("flamegraph").Parse(flamegraphTemplate)
 	if err != nil {
-		return fmt.Errorf("failed to parse flamegraph template: %w", err)
+		return fmt.Errorf("failed to parse flamegraph template: %w\n"+
+			"  This is an internal error — please report it with 'glassbox version' output", err)
 	}
 
 	data := map[string]interface{}{
@@ -66,11 +91,16 @@ func GenerateHTML(execTrace *trace.ExecutionTrace, w io.Writer) error {
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("failed to render flamegraph template: %w", err)
+		return fmt.Errorf("failed to render flamegraph template: %w\n"+
+			"  This is an internal error — please report it with 'glassbox version' output", err)
 	}
 
 	_, err = w.Write(buf.Bytes())
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to write flamegraph output: %w\n"+
+			"  Fix: ensure the output destination is writable and has sufficient space", err)
+	}
+	return nil
 }
 
 // buildFrames constructs a FrameData slice from the execution trace states.
