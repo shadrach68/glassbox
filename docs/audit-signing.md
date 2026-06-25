@@ -16,10 +16,16 @@ glassbox audit:sign \
 export GLASSBOX_PKCS11_MODULE=/usr/lib/softhsm/libsofthsm2.so
 export GLASSBOX_PKCS11_PIN=1234
 export GLASSBOX_PKCS11_KEY_LABEL=glassbox-audit-key
-glassbox audit:sign --hsm-provider pkcs11 --payload-file payload.json
+glassbox audit:sign --signing-provider pkcs11 --payload-file payload.json
 
-# Validate PKCS#11 configuration without signing anything
-glassbox audit:sign --hsm-provider pkcs11 --validate-only
+# ...or pass everything as flags (flags override the environment)
+glassbox audit:sign --signing-provider pkcs11 --payload-file payload.json \
+  --pkcs11-module /usr/lib/softhsm/libsofthsm2.so --pkcs11-pin 1234 \
+  --pkcs11-key-label glassbox-audit-key
+
+# Validate PKCS#11 configuration without signing anything (preflight)
+glassbox audit:sign --signing-provider pkcs11 --validate-only \
+  --pkcs11-module /usr/lib/softhsm/libsofthsm2.so --pkcs11-pin 1234
 ```
 
 ---
@@ -62,6 +68,44 @@ At least one of `GLASSBOX_PKCS11_KEY_LABEL` or `GLASSBOX_PKCS11_KEY_ID` is requi
 | `GLASSBOX_PKCS11_KEY_ID` | Hex-encoded `CKA_ID` of the key (alternative to label) |
 | `GLASSBOX_PKCS11_TOKEN_LABEL` | Select token by label instead of slot index |
 | `GLASSBOX_PKCS11_SLOT` | Slot index (default `0`) |
+
+### CLI flags and precedence
+
+Every environment variable has a matching flag; **the flag takes precedence** when both are set:
+
+| Flag | Environment variable |
+|------|----------------------|
+| `--pkcs11-module` | `GLASSBOX_PKCS11_MODULE` |
+| `--pkcs11-pin` | `GLASSBOX_PKCS11_PIN` |
+| `--pkcs11-token-label` | `GLASSBOX_PKCS11_TOKEN_LABEL` |
+| `--pkcs11-key-label` | `GLASSBOX_PKCS11_KEY_LABEL` |
+| `--pkcs11-key-id` | `GLASSBOX_PKCS11_KEY_ID` |
+
+### Input validation
+
+When the pkcs11 provider is selected, the command validates the configuration
+**before loading any module**, so misconfiguration fails fast with an explicit
+message instead of a low-level error mid-signing:
+
+- `--pkcs11-module` (or `GLASSBOX_PKCS11_MODULE`) and `--pkcs11-pin` (or
+  `GLASSBOX_PKCS11_PIN`) are required. A missing value is reported as, e.g.:
+
+  ```
+  pkcs11 signing requires --pkcs11-module (or GLASSBOX_PKCS11_MODULE) and --pkcs11-pin (or GLASSBOX_PKCS11_PIN)
+    Provide the missing value(s), or run 'glassbox audit:sign --validate-only --signing-provider pkcs11' for a full PKCS#11 preflight report.
+  ```
+
+- `--pkcs11-key-id`, when provided, must be valid hex (`CKA_ID`).
+
+### Preflight (`--validate-only`)
+
+`--validate-only` runs the full PKCS#11 preflight — module path, module load,
+slot enumeration, token info, session open, PIN auth, key lookup, and a
+test-sign — and prints a `[PASS]`/`[FAIL]` report **without signing**. It works
+with the provider selected by `--signing-provider pkcs11` (or the deprecated
+`--hsm-provider pkcs11`, or the environment), and honors the `--pkcs11-*` flags
+in addition to the environment variables. Each failed step includes a
+remediation hint; the command exits non-zero if any check fails.
 
 ---
 

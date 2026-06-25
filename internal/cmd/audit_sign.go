@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,8 +24,8 @@ import (
 
 // auditSign flag variables — package-level so tests can set them directly.
 var (
-	auditSignPayload     string
-	auditSignPayloadFile string
+	auditSignPayload      string
+	auditSignPayloadFile  string
 	auditSignValidateOnly bool
 
 	// auditSignSoftwareKey accepts a PKCS#8 PEM Ed25519 private key (literal
@@ -50,9 +51,9 @@ var (
 	auditSignPKCS11KeyIDHex   string
 
 	// Provenance flags — optional metadata attached to the signed audit log.
-	auditSignSignerIdentity       string
-	auditSignKeyID                string
-	auditSignCertChainFile        string
+	auditSignSignerIdentity        string
+	auditSignKeyID                 string
+	auditSignCertChainFile         string
 	auditSignPreviousSignatureHash string
 )
 
@@ -89,7 +90,7 @@ type SignedAuditLog struct {
 	Signature  string               `json:"signature"`
 	PublicKey  string               `json:"public_key"`
 	Provider   string               `json:"provider"`
-	Provenance *SignatureProvenance  `json:"provenance,omitempty"`
+	Provenance *SignatureProvenance `json:"provenance,omitempty"`
 	Payload    json.RawMessage      `json:"payload"`
 }
 
@@ -108,9 +109,15 @@ SIGNING PROVIDERS
                       or GLASSBOX_SOFTWARE_PRIVATE_KEY_HEX
 
   pkcs11    — Hardware security module signing via PKCS#11 Cryptoki.
-            Required: GLASSBOX_PKCS11_MODULE, GLASSBOX_PKCS11_PIN
-            Optional: GLASSBOX_PKCS11_TOKEN_LABEL, GLASSBOX_PKCS11_KEY_LABEL,
-                      GLASSBOX_PKCS11_KEY_ID
+            Required: --pkcs11-module / GLASSBOX_PKCS11_MODULE
+                      --pkcs11-pin    / GLASSBOX_PKCS11_PIN
+            Optional: --pkcs11-token-label / GLASSBOX_PKCS11_TOKEN_LABEL
+                      --pkcs11-key-label   / GLASSBOX_PKCS11_KEY_LABEL
+                      --pkcs11-key-id      / GLASSBOX_PKCS11_KEY_ID
+            Flags take precedence over the matching environment variable. The
+            required inputs are validated up front; use --validate-only to run a
+            full preflight (module load, slot, PIN, key, test-sign) without
+            signing.
 
 PROVIDER SELECTION ORDER
   1. --signing-provider flag
@@ -133,12 +140,31 @@ EXAMPLES
   glassbox audit:sign --payload-file payload.json \
     --signing-provider pkcs11 \
     --pkcs11-module /usr/lib/softhsm/libsofthsm2.so \
-    --pkcs11-pin 1234`,
-	Args: cobra.NoArgs,
-	PreRunE: func(cmd *cobra.Command, args []string) error {
-		return validateAuditSignArgs(auditSignPayload, auditSignPayloadFile, auditSignProvider)
-	},
-	RunE: runAuditSign,
+    --pkcs11-pin 1234
+
+  # Validate PKCS#11 configuration without signing (preflight)
+  glassbox audit:sign --validate-only --signing-provider pkcs11 \
+    --pkcs11-module /usr/lib/softhsm/libsofthsm2.so --pkcs11-pin 1234`,
+	Args:    cobra.NoArgs,
+	PreRunE: auditSignPreRunE,
+	RunE:    runAuditSign,
+}
+
+// auditSignPreRunE validates inputs before signing. In addition to the shared
+// argument checks, when the effective provider is pkcs11 (and we are not running
+// a preflight-only pass) it verifies the required PKCS#11 inputs are present so
+// failures surface as clear messages instead of low-level errors deep in the
+// signing path.
+func auditSignPreRunE(cmd *cobra.Command, args []string) error {
+	if err := validateAuditSignArgs(auditSignPayload, auditSignPayloadFile, auditSignProvider); err != nil {
+		return err
+	}
+
+	name, _ := resolveProviderAndConfig()
+	if strings.EqualFold(name, "pkcs11") && !auditSignValidateOnly {
+		return validatePKCS11SignInputs(effectivePKCS11Config())
+	}
+	return nil
 }
 
 func init() {
@@ -349,17 +375,19 @@ func resolveAuditSigner() (signer.Signer, error) {
 // runPkcs11Preflight executes the PKCS#11 preflight validator and prints a
 // human-readable report. It exits with a non-zero status if any check fails.
 func runPkcs11Preflight(cmd *cobra.Command) error {
-	if !strings.EqualFold(auditSignHSMProvider, "pkcs11") {
-		return errors.WrapValidationError("--validate-only requires --hsm-provider pkcs11")
+	// Accept the provider from any selection path (--signing-provider,
+	// --hsm-provider, or environment), not just the deprecated --hsm-provider.
+	name, _ := resolveProviderAndConfig()
+	if !strings.EqualFold(name, "pkcs11") {
+		return errors.WrapValidationError(
+			"--validate-only applies only to the pkcs11 provider; select it with --signing-provider pkcs11")
 	}
 
-	cfg, err := signer.Pkcs11ConfigFromEnv()
-	if err != nil {
-		return err
-	}
-
+	// Build the config from flags merged over environment so --pkcs11-* overrides
+	// are honored (the validator itself reports any still-missing values).
+	cfg := effectivePKCS11Config()
 	vcfg := signer.DefaultValidatorConfig()
-	validator := signer.NewPkcs11Validator(*cfg, vcfg, &signer.OsPkcs11Provider{})
+	validator := signer.NewPkcs11Validator(cfg, vcfg, &signer.OsPkcs11Provider{})
 
 	out := cmd.OutOrStdout()
 	fmt.Fprintln(out, "Running PKCS#11 preflight checks...")
@@ -384,6 +412,65 @@ func runPkcs11Preflight(cmd *cobra.Command) error {
 	return errors.WrapValidationError("PKCS#11 preflight checks failed; review the output above for remediation steps")
 }
 
+// effectivePKCS11Config builds the PKCS#11 configuration the command will use,
+// applying CLI flags over the corresponding GLASSBOX_PKCS11_* environment
+// variables (flags take precedence). It is the single source of truth for both
+// preflight validation and the early required-input checks.
+func effectivePKCS11Config() signer.Pkcs11Config {
+	cfg := signer.Pkcs11Config{
+		ModulePath: firstNonEmpty(auditSignPKCS11Module, os.Getenv("GLASSBOX_PKCS11_MODULE")),
+		PIN:        firstNonEmpty(auditSignPKCS11PIN, os.Getenv("GLASSBOX_PKCS11_PIN")),
+		TokenLabel: firstNonEmpty(auditSignPKCS11TokenLabel, os.Getenv("GLASSBOX_PKCS11_TOKEN_LABEL")),
+		KeyLabel:   firstNonEmpty(auditSignPKCS11KeyLabel, os.Getenv("GLASSBOX_PKCS11_KEY_LABEL")),
+		KeyIDHex:   firstNonEmpty(auditSignPKCS11KeyIDHex, os.Getenv("GLASSBOX_PKCS11_KEY_ID")),
+	}
+	if slot := os.Getenv("GLASSBOX_PKCS11_SLOT"); slot != "" {
+		if idx, err := strconv.Atoi(slot); err == nil {
+			cfg.SlotIndex = idx
+		}
+	}
+	return cfg
+}
+
+// validatePKCS11SignInputs rejects an incomplete PKCS#11 configuration before any
+// module is loaded, so the user gets an explicit message instead of a low-level
+// failure mid-signing. The module path and PIN are required; the key CKA_ID,
+// when supplied, must be valid hex.
+func validatePKCS11SignInputs(cfg signer.Pkcs11Config) error {
+	var missing []string
+	if cfg.ModulePath == "" {
+		missing = append(missing, "--pkcs11-module (or GLASSBOX_PKCS11_MODULE)")
+	}
+	if cfg.PIN == "" {
+		missing = append(missing, "--pkcs11-pin (or GLASSBOX_PKCS11_PIN)")
+	}
+	if len(missing) > 0 {
+		return errors.WrapValidationError(fmt.Sprintf(
+			"pkcs11 signing requires %s\n"+
+				"  Provide the missing value(s), or run 'glassbox audit:sign --validate-only --signing-provider pkcs11' "+
+				"for a full PKCS#11 preflight report.",
+			strings.Join(missing, " and ")))
+	}
+
+	if cfg.KeyIDHex != "" {
+		if _, err := hex.DecodeString(cfg.KeyIDHex); err != nil {
+			return errors.WrapValidationError(fmt.Sprintf(
+				"--pkcs11-key-id must be a hex-encoded CKA_ID (e.g. a1b2c3): %v", err))
+		}
+	}
+
+	return nil
+}
+
+// firstNonEmpty returns the first non-empty string of its arguments.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
 
 // buildProvenance constructs a SignatureProvenance from CLI flags.
 // Returns nil when no provenance flags are set (backward-compatible behaviour).
