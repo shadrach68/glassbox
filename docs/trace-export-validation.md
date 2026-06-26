@@ -72,25 +72,30 @@ invalid trace export format "yaml" — must be one of: text, json, html, markdow
 
 ## Pre-export Validation
 
-Before attempting to write a trace export, the system validates all export parameters:
+Before attempting to write a trace export, the system validates all export parameters using comprehensive validation functions: `ValidateTraceExportParams()` and `ValidateTraceFormatCompatibility()`.
 
-### Trace Data Validation
+### Trace Data Validation (ValidateTraceExportParams)
 
 **Checks:**
 - Trace object is not nil
 - Trace contains at least one execution state
-- All state step indices match their position in the array
+- Transaction hash is present and non-empty
+- Start and end times are valid (not zero, end >= start)
 - Event types are recognized (unrecognized types trigger warnings)
 
 **Error example:**
 ```
-execution trace for transaction "5c0a1234..." contains no steps — trace export would be empty
-  Possible causes:
-    - Simulation did not produce any diagnostic events
-    - Transaction envelope is invalid
-    - Simulator version is incompatible
-  Fix: verify the transaction executed successfully
-  Recommended: run 'glassbox doctor' to check simulator compatibility
+trace has no execution states — empty trace cannot be exported
+  Fix: verify that the trace was captured correctly and contains at least one step
+  Tip: check that the traced transaction actually executed any code
+```
+
+Another example with time validation:
+
+```
+trace end time is before start time — invalid temporal ordering
+  Fix: verify the trace timestamps were recorded correctly
+  Start: 2026-01-02T15:04:05Z, End: 2026-01-02T15:04:00Z
 ```
 
 ### Format and Path Validation
@@ -124,7 +129,7 @@ too many comments (150) — maximum is 100 comments per trace export
 
 ## Format Compatibility Checks
 
-Each export format has specific compatibility requirements:
+Format compatibility validation is performed by `ValidateTraceFormatCompatibility()` to ensure trace data is suitable for the target export format. Each format has specific requirements and constraints.
 
 ### JSON Format
 
@@ -140,20 +145,22 @@ trace step mismatch at position 5: expected step 5 but got 10 — trace may be c
 
 ### HTML Format
 
-**Requirements:**
-- Argument strings should not exceed 50,000 characters (browser rendering limit)
-- Special characters are automatically HTML-escaped
+**Compatibility constraints:**
+- Traces with >50,000 steps may cause browser rendering to be slow or unresponsive
+- Individual error messages >1MB will cause rendering issues
 
 **Error example:**
 ```
-step 3 has very large arguments (75000 chars) that may cause browser rendering issues in HTML format — consider using JSON format instead
+trace has 60000 steps — too large for HTML export (browser may become unresponsive)
+  Fix: use --format json for large traces or filter the trace verbosity
+  Alternatively: use --trace-verbosity summary to reduce output size
 ```
 
 ### Markdown Format
 
-**Requirements:**
-- Works with most data
-- Very long lines may require viewer adjustments
+**Compatibility constraints:**
+- Traces with >10,000 steps produce very large markdown files (>1MB)
+- Code fence markers (```) in error messages should be reviewed for formatting
 
 ### Text Format
 

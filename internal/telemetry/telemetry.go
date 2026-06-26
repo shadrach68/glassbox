@@ -19,7 +19,6 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
-	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 // Config holds OpenTelemetry configuration
@@ -209,8 +208,9 @@ func GetEnvMetadata() EnvMetadata {
 }
 
 // GetTracer returns the global tracer instance
-func GetTracer() otel.Tracer {
-	return otel.Tracer("glassbox")
+func GetTracer() interface{} {
+	tp := otel.GetTracerProvider()
+	return tp.Tracer("glassbox")
 }
 
 // SanitizeValue returns a privacy-preserving representation for telemetry.
