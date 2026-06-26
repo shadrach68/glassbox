@@ -91,6 +91,13 @@ func writeOperationAuditLog(rawArgs []string, execErr error) error {
 		path = defaultAuditLogPath()
 	}
 
+	// Validate the audit log output path before creating directories or writing.
+	// This catches null bytes, traversal sequences, and existing-directory targets
+	// that would otherwise reach os.MkdirAll / os.WriteFile unvalidated.
+	if _, err := ValidateOutputPath("audit-log", path); err != nil {
+		return errors.WrapValidationError(fmt.Sprintf("invalid --audit-log path: %v", err))
+	}
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return errors.WrapValidationError(fmt.Sprintf("failed to create audit log directory: %v", err))
 	}

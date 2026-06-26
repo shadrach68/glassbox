@@ -551,13 +551,81 @@ All errors include a `Fix:` hint and reference the current expected version.
 
 ---
 
-## See Also
+## Path Normalization and Safety
 
-- [Debug Command Reference](./debug-command.md)
-- [Trace Export Annotations](./trace-export-annotations.md)
-- [Trace Profiling and Performance](./trace-profiling.md)
-- [Event Schemas](./event-schemas.md)
-- [JSON Output Format](./json-output.md)
+All trace export output paths go through a security-aware validation layer before any file I/O begins. This section describes what is checked, what errors are produced, and how the checks differ from a simple trailing-slash guard.
+
+### What is validated
+
+Every output path flag (`--export`, `--output-json`, `--export-svg`, `--export-markdown`, `--snapshot`) and every input path flag (`--annotations`, `--gas-model`) is now processed through:
+
+1. **Null-byte rejection** — paths containing `\x00` are rejected immediately (shell injection risk)
+2. **`filepath.Clean` + `filepath.Abs`** — resolves `.` and `..` components to their absolute form before any existence check
+3. **Symlink resolution** — `filepath.EvalSymlinks` is called so that a symlink pointing outside an allowed root is caught, not just the raw string
+4. **Existing-directory guard** — if the path already refers to a directory on disk, the write is rejected with a message that includes the flag name and a suggested filename
+
+For input paths the validator additionally checks that the file exists and is not a directory.
+
+### Error message format
+
+All path errors include the flag name (`--export`, `--output-json`, etc.) so the failing flag is unambiguous:
+
+**Null byte:**
+```
+--export: path contains null bytes and cannot be used: "/path/to/trace\x00.html"
+```
+
+**Existing directory:**
+```
+--output-json: "/traces" is a directory; provide a full file path (e.g. "/traces/output.json")
+```
+
+**Missing input file:**
+```
+--annotations: file not found: "/path/to/annotations.json"
+  Check that the path is correct and the file exists
+```
+
+**Path traversal (`--trace-output` via `ValidateTraceInputs`):**
+```
+--trace-output "../../../etc/passwd" contains directory traversal sequences (..)
+  Fix: use absolute paths or relative paths without '..' for security
+  Example: use './output/trace.html' instead of '../output/trace.html'
+```
+
+### The traversal detection fix
+
+The old traversal check used `strings.Contains(path, "..")` which produced false positives for filenames that legitimately contain double dots (e.g. `my..trace.html`) and could miss Windows-style traversal paths.
+
+The new check uses `filepath.Clean` first:
+
+```go
+cleaned := filepath.Clean(outputPath)
+if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+    // traversal detected
+}
+```
+
+This correctly:
+- Accepts `my..trace.html` (double dot in filename, not a traversal component)
+- Rejects `../trace.html` and `../../etc/passwd` after cleaning
+- Handles both POSIX (`/`) and Windows (`\`) separators
+
+### Coverage by command
+
+| Flag | Command | Validator |
+|------|---------|-----------|
+| `--export` | `trace` | `ValidateOutputPath` → `NormalizePath` |
+| `--output-json` | `trace` | `ValidateOutputPath` → `NormalizePath` |
+| `--export-svg` | `trace` | `ValidateOutputPath` → `NormalizePath` |
+| `--export-markdown` | `trace` | `ValidateOutputPath` → `NormalizePath` |
+| `--annotations` | `trace` | `ValidateInputPath` → `NormalizePath` |
+| `--gas-model` | `trace` | `ValidateInputPath` → `NormalizePath` |
+| trace file argument | `trace` | `ValidateInputPath` → `NormalizePath` |
+| `--snapshot` (export) | `export` | `ValidateOutputPath` → `NormalizePath` |
+| `--audit-log` | all | `ValidateOutputPath` → `NormalizePath` |
+| `--trace-output` | `debug` | `ValidateTraceInputs` + `ValidateDebugOutputPaths` |
+| `--save-snapshots`, `--export-svg` | `debug` | `ValidateDebugOutputPaths` → `NormalizePath` |
 
 ---
 

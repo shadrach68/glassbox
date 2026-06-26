@@ -5,6 +5,7 @@ package trace
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -98,20 +99,20 @@ func ValidateTraceInputs(verbosity, exportFormat, eventFilter, outputPath string
 				outputPath,
 			))
 		}
-		
-		// Validate parent directory exists or can be created
-		// Note: We only check for obviously invalid paths here; actual directory creation happens at write time
-		if strings.Contains(outputPath, "\x00") {
+
+		// Null bytes in paths are a shell-injection risk.
+		if strings.ContainsRune(outputPath, 0) {
 			failures = append(failures, fmt.Sprintf(
 				"--trace-output contains null bytes which are not allowed in file paths\n"+
 					"  Fix: remove any null bytes from the path specification",
 			))
 		}
-		
-		// Check for suspicious path traversal patterns
-		if strings.Contains(outputPath, "..") {
-			// This is just a warning-level check; the actual path validation happens in path_safety.go
-			// But we can provide early feedback
+
+		// Use filepath.Clean to reliably detect traversal after normalisation.
+		// A string-contains("..")  check would falsely flag names like "..safe"
+		// or legitimate double-dot-free paths on some platforms.
+		cleaned := filepath.Clean(outputPath)
+		if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 			failures = append(failures, fmt.Sprintf(
 				"--trace-output %q contains directory traversal sequences (..)\n"+
 					"  Fix: use absolute paths or relative paths without '..' for security\n"+
