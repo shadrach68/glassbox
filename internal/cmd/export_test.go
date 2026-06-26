@@ -105,6 +105,13 @@ func TestExportCmd_InvalidFormat(t *testing.T) {
 	if !strings.Contains(err.Error(), "format") {
 		t.Errorf("error should mention 'format', got: %v", err)
 	}
+	// Should include a Fix hint and an Example.
+	if !strings.Contains(err.Error(), "Fix:") {
+		t.Errorf("error should include a Fix hint, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Example") {
+		t.Errorf("error should include an Example hint, got: %v", err)
+	}
 }
 
 func TestExportCmd_ValidFormats(t *testing.T) {

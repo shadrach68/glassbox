@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dotandev/glassbox/internal/clioutput"
 	"github.com/dotandev/glassbox/internal/errors"
 	"github.com/dotandev/glassbox/internal/signer"
 	"github.com/spf13/cobra"
@@ -27,6 +26,10 @@ var (
 	auditSignPayload      string
 	auditSignPayloadFile  string
 	auditSignValidateOnly bool
+
+	// auditSignJSONFlag wraps the signed audit log output in a schema-versioned
+	// JSON envelope (currently a no-op pass-through; reserved for future envelope).
+	auditSignJSONFlag bool
 
 	// auditSignSoftwareKey accepts a PKCS#8 PEM Ed25519 private key (literal
 	// PEM text or a file path). Equivalent to GLASSBOX_AUDIT_PRIVATE_KEY_PEM.
@@ -155,8 +158,17 @@ EXAMPLES
 // a preflight-only pass) it verifies the required PKCS#11 inputs are present so
 // failures surface as clear messages instead of low-level errors deep in the
 // signing path.
+//
+// Provenance flags are also validated here so problems with --previous-signature-hash
+// format or a missing --cert-chain file are caught before any signing work begins.
 func auditSignPreRunE(cmd *cobra.Command, args []string) error {
 	if err := validateAuditSignArgs(auditSignPayload, auditSignPayloadFile, auditSignProvider); err != nil {
+		return err
+	}
+
+	// Validate provenance flags up-front so the user gets actionable errors
+	// before any signing work happens.
+	if err := validateAuditSignProvenanceFlags(auditSignPreviousSignatureHash, auditSignCertChainFile); err != nil {
 		return err
 	}
 
@@ -470,6 +482,36 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// validateAuditSignProvenanceFlags validates provenance-related flags before signing.
+// It rejects a malformed --previous-signature-hash (must be 64 hex chars) and checks
+// that --cert-chain points to an existing, readable file so failures surface as
+// clear messages rather than deep I/O errors inside buildProvenance.
+func validateAuditSignProvenanceFlags(previousHash, certChainFile string) error {
+	if previousHash != "" {
+		if err := validateSHA256HexHash("--previous-signature-hash", previousHash); err != nil {
+			return errors.WrapValidationError(
+				err.Error() + "\n" +
+					"  --previous-signature-hash must be the hex-encoded SHA-256 of the preceding signed audit log\n" +
+					"  Fix: provide the exact 64-character hex string from the prior log's trace_hash field\n" +
+					"  Example: glassbox audit:sign --previous-signature-hash <64-hex-chars> --payload-file payload.json",
+			)
+		}
+	}
+
+	if certChainFile != "" {
+		if err := validateFilePath("cert-chain", certChainFile); err != nil {
+			return errors.WrapValidationError(
+				fmt.Sprintf("--cert-chain: file not found or not readable: %q\n"+
+					"  Fix: provide the path to a valid PEM file containing the certificate chain (leaf first)\n"+
+					"  Example: glassbox audit:sign --cert-chain ./certs/chain.pem --payload-file payload.json",
+					certChainFile),
+			)
+		}
+	}
+
+	return nil
 }
 
 // buildProvenance constructs a SignatureProvenance from CLI flags.

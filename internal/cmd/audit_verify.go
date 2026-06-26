@@ -197,8 +197,21 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 			result.Error = appendErr(result.Error, fmt.Sprintf("chain link: %v", linkErr))
 		}
 	} else if log.Provenance != nil && log.Provenance.PreviousSignatureHash != "" {
-		result.ChainNote = "previous_signature_hash is present but chain linkage was not verified; " +
-			"pass --previous-signature-hash <hex> to confirm this log links to the expected predecessor"
+		// Format-check the embedded hash so a malformed value is caught even
+		// when the caller does not supply --previous-signature-hash for full
+		// chain verification. A structurally invalid hash cannot link to any
+		// predecessor, so we surface a warning rather than silently pass.
+		if fmtErr := validateSHA256HexHash("previous_signature_hash", log.Provenance.PreviousSignatureHash); fmtErr != nil {
+			result.ChainNote = fmt.Sprintf(
+				"previous_signature_hash is present but its format is invalid (%v); "+
+					"the log may be corrupted or tampered — "+
+					"pass --previous-signature-hash <hex> to attempt full chain verification",
+				fmtErr,
+			)
+		} else {
+			result.ChainNote = "previous_signature_hash is present but chain linkage was not verified; " +
+				"pass --previous-signature-hash <hex> to confirm this log links to the expected predecessor"
+		}
 	}
 
 	result.Valid = result.HashValid && result.SignatureValid &&
