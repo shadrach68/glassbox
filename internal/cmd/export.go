@@ -54,7 +54,9 @@ Examples:
 		if exportFormatFlag != "" {
 			if !validExportFormats[strings.ToLower(strings.TrimSpace(exportFormatFlag))] {
 				return errors.WrapValidationError(fmt.Sprintf(
-					"invalid --format %q — must be one of: text, json",
+					"invalid --format %q — must be one of: text, json\n"+
+						"  Fix: use --format text (human-readable, default) or --format json (machine-readable)\n"+
+						"  Example: glassbox export --snapshot ./state.snap.json --format json",
 					exportFormatFlag,
 				))
 			}
