@@ -27,6 +27,20 @@ test_results.txt
 test_output.txt
 .!*
 
+# --- Generated / snapshot / temp session artifacts ---
+*.gbx
+*.snap
+*.snap.json
+*_snapshot.json
+testdata/snapshots/
+**/__snapshots__/
+**/testsnap/
+**/*.testsnapshot
+*.flamegraph.html
+*.flamegraph.svg
+perf_*.json
+!internal/simulator/perf_baseline.json
+
 # --- Go specific ---
 /vendor/
 coverage.out

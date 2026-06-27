@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -27,6 +28,32 @@ type archiveMeta struct {
 	SchemaVersion  int    `json:"schema_version"`
 }
 
+// SupportedArchiveExtensions lists the file extensions accepted for session
+// archive files. The canonical extension is ".gbx"; ".zip" is also accepted
+// for interoperability with generic ZIP tools.
+var SupportedArchiveExtensions = []string{".gbx", ".zip"}
+
+// ValidateArchivePath checks that destPath is non-empty and ends with a
+// supported archive extension. It returns an actionable error when the
+// extension is missing or unsupported.
+func ValidateArchivePath(destPath string) error {
+	if strings.TrimSpace(destPath) == "" {
+		return fmt.Errorf("destination path is required")
+	}
+	ext := strings.ToLower(filepath.Ext(destPath))
+	for _, supported := range SupportedArchiveExtensions {
+		if ext == supported {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"unsupported archive extension %q — must be one of: %s\n"+
+			"  Fix: rename the output file with a supported extension\n"+
+			"  Example: glassbox session share --output ./session.gbx",
+		ext, strings.Join(SupportedArchiveExtensions, ", "),
+	)
+}
+
 // ExportArchive packages a debug session into a portable ZIP archive at
 // destPath. The archive contains:
 //
@@ -39,8 +66,8 @@ func ExportArchive(data *Data, destPath string) error {
 	if data == nil {
 		return fmt.Errorf("session data is nil")
 	}
-	if destPath == "" {
-		return fmt.Errorf("destination path is required")
+	if err := ValidateArchivePath(destPath); err != nil {
+		return err
 	}
 
 	f, err := os.Create(destPath)
@@ -86,12 +113,43 @@ func ExportArchive(data *Data, destPath string) error {
 }
 
 // ImportArchive reads a session archive produced by ExportArchive and returns
-// the reconstructed Data. It validates the archive version against the current
-// SchemaVersion and returns an error if the archive is incompatible.
+// the reconstructed Data. It validates the archive format, extension, and
+// version compatibility before returning, surfacing actionable errors for each
+// failure mode.
 func ImportArchive(srcPath string) (*Data, error) {
+	if strings.TrimSpace(srcPath) == "" {
+		return nil, fmt.Errorf(
+			"archive path is required\n" +
+				"  Fix: provide the path to a .gbx archive file\n" +
+				"  Example: glassbox session load ./session.gbx",
+		)
+	}
+
+	// Validate extension so we surface a clear error before attempting to open.
+	ext := strings.ToLower(filepath.Ext(srcPath))
+	validExt := false
+	for _, supported := range SupportedArchiveExtensions {
+		if ext == supported {
+			validExt = true
+			break
+		}
+	}
+	if !validExt {
+		return nil, fmt.Errorf(
+			"unsupported archive extension %q — expected one of: %s\n"+
+				"  Fix: use a file exported by 'glassbox session share'\n"+
+				"  Example: glassbox session load ./session.gbx",
+			ext, strings.Join(SupportedArchiveExtensions, ", "),
+		)
+	}
+
 	zr, err := zip.OpenReader(srcPath)
 	if err != nil {
-		return nil, fmt.Errorf("cannot open archive %q: %w", srcPath, err)
+		return nil, fmt.Errorf(
+			"cannot open archive %q: %w\n"+
+				"  Fix: ensure the file exists, is readable, and is a valid Glassbox session archive",
+			srcPath, err,
+		)
 	}
 	defer func() { _ = zr.Close() }()
 
@@ -104,30 +162,50 @@ func ImportArchive(srcPath string) (*Data, error) {
 		switch f.Name {
 		case "meta.json":
 			if err := readJSONEntry(f, &meta); err != nil {
-				return nil, fmt.Errorf("failed to read meta.json: %w", err)
+				return nil, fmt.Errorf(
+					"failed to read meta.json from archive: %w\n"+
+						"  Fix: the archive may be corrupt. Re-export it with 'glassbox session share'",
+					err,
+				)
 			}
 			metaFound = true
 		case "session.json":
 			if err := readJSONEntry(f, &data); err != nil {
-				return nil, fmt.Errorf("failed to read session.json: %w", err)
+				return nil, fmt.Errorf(
+					"failed to read session.json from archive: %w\n"+
+						"  Fix: the archive may be corrupt. Re-export it with 'glassbox session share'",
+					err,
+				)
 			}
 			sessionFound = true
 		}
 	}
 
 	if !metaFound {
-		return nil, fmt.Errorf("archive is missing meta.json: not a valid Glassbox session archive")
+		return nil, fmt.Errorf(
+			"archive is missing meta.json — not a valid Glassbox session archive\n" +
+				"  Fix: use a file exported by 'glassbox session share'",
+		)
 	}
 	if !sessionFound {
-		return nil, fmt.Errorf("archive is missing session.json")
+		return nil, fmt.Errorf(
+			"archive is missing session.json — not a valid Glassbox session archive\n" +
+				"  Fix: use a file exported by 'glassbox session share'",
+		)
 	}
 	if meta.ArchiveVersion > archiveVersion {
-		return nil, fmt.Errorf("archive version %d is newer than supported version %d; upgrade Glassbox",
-			meta.ArchiveVersion, archiveVersion)
+		return nil, fmt.Errorf(
+			"archive version %d is newer than supported version %d\n"+
+				"  Fix: upgrade Glassbox to the latest release to open this archive",
+			meta.ArchiveVersion, archiveVersion,
+		)
 	}
 	if meta.SchemaVersion > SchemaVersion {
-		return nil, fmt.Errorf("session schema version %d is newer than supported version %d; upgrade Glassbox",
-			meta.SchemaVersion, SchemaVersion)
+		return nil, fmt.Errorf(
+			"session schema version %d is newer than supported version %d\n"+
+				"  Fix: upgrade Glassbox to the latest release to open this session",
+			meta.SchemaVersion, SchemaVersion,
+		)
 	}
 
 	return &data, nil

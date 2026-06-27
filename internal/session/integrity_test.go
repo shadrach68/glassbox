@@ -312,3 +312,94 @@ func requireIssueField(t *testing.T, report *IntegrityReport, field string) {
 	}
 	t.Errorf("expected an issue for field %q, got: %v", field, report.Issues)
 }
+
+// ── SaveWithValidation ────────────────────────────────────────────────────────
+
+func TestSaveWithValidation_ValidSession_Succeeds(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	store, err := NewStore()
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := t.Context()
+	d := validData()
+	if err := store.SaveWithValidation(ctx, d); err != nil {
+		t.Errorf("SaveWithValidation should succeed for a valid session, got: %v", err)
+	}
+}
+
+func TestSaveWithValidation_NilData_ReturnsError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	store, err := NewStore()
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.SaveWithValidation(t.Context(), nil); err == nil {
+		t.Fatal("expected error for nil session data")
+	}
+}
+
+func TestSaveWithValidation_InvalidSession_ReturnsDescriptiveError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	store, err := NewStore()
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	d := validData()
+	d.TxHash = ""   // missing required field
+	d.Network = ""  // missing required field
+
+	err = store.SaveWithValidation(t.Context(), d)
+	if err == nil {
+		t.Fatal("expected error for invalid session data")
+	}
+	msg := err.Error()
+	// Error must list the specific failing fields.
+	if !strings.Contains(msg, "TxHash") {
+		t.Errorf("error should mention 'TxHash', got: %v", err)
+	}
+	if !strings.Contains(msg, "Network") {
+		t.Errorf("error should mention 'Network', got: %v", err)
+	}
+	// Error must include a Hint for each issue.
+	if !strings.Contains(msg, "Hint:") {
+		t.Errorf("error should include at least one 'Hint:', got: %v", err)
+	}
+}
+
+func TestSaveWithValidation_InvalidSession_ListsAllIssues(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	store, err := NewStore()
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	// Session with 4+ issues: empty ID, TxHash, Network, Status.
+	d := &Data{
+		SchemaVersion: SchemaVersion,
+		CreatedAt:     time.Now().Add(-time.Hour),
+		LastAccessAt:  time.Now(),
+	}
+	err = store.SaveWithValidation(t.Context(), d)
+	if err == nil {
+		t.Fatal("expected error listing multiple issues")
+	}
+	if !strings.Contains(err.Error(), "validation") {
+		t.Errorf("error should mention 'validation', got: %v", err)
+	}
+}

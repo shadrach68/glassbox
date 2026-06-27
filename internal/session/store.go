@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/dotandev/glassbox/internal/logger"
@@ -172,6 +173,37 @@ func (s *Store) ensureColumn(table, column, definition string) error {
 	return nil
 }
 
+// SaveWithValidation validates the session data for integrity before persisting
+// it. It returns a descriptive error listing all issues found, so callers
+// receive actionable feedback instead of a silent partial-write.
+//
+// Use this method in preference to Save when the caller cannot guarantee
+// that the Data has already been validated (e.g. external imports, recovery
+// paths, or data loaded from archives).
+func (s *Store) SaveWithValidation(ctx context.Context, data *Data) error {
+	if data == nil {
+		return fmt.Errorf(
+			"cannot save nil session data\n" +
+				"  Fix: run 'glassbox debug <tx-hash>' to create a session before saving",
+		)
+	}
+
+	report := ValidateIntegrity(data)
+	if !report.OK {
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("session data failed validation (%d issue(s)):\n", len(report.Issues)))
+		for i, issue := range report.Issues {
+			sb.WriteString(fmt.Sprintf("  %d. [%s] %s\n", i+1, issue.Field, issue.Description))
+			if issue.Hint != "" {
+				sb.WriteString(fmt.Sprintf("     Hint: %s\n", issue.Hint))
+			}
+		}
+		return fmt.Errorf("%s", sb.String())
+	}
+
+	return s.Save(ctx, data)
+}
+
 // Save persists a session to the database
 func (s *Store) Save(ctx context.Context, data *Data) error {
 	if data.ID == "" {
@@ -250,10 +282,18 @@ func (s *Store) Load(ctx context.Context, sessionID string) (*Data, error) {
 	}
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
+		return nil, fmt.Errorf(
+			"session not found: %s\n"+
+				"  Fix: run 'glassbox session list' to see available sessions",
+			sessionID,
+		)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to load session: %w", err)
+		return nil, fmt.Errorf(
+			"failed to load session %q: %w\n"+
+				"  Fix: the session database may be corrupt. Check ~/.Glassbox/sessions.db",
+			sessionID, err,
+		)
 	}
 
 	// Parse timestamps
@@ -276,11 +316,21 @@ func (s *Store) Load(ctx context.Context, sessionID string) (*Data, error) {
 
 // LoadByName retrieves a saved session snapshot by its user-facing bookmark name.
 func (s *Store) LoadByName(ctx context.Context, name string) (*Data, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, fmt.Errorf(
+			"session name is required\n" +
+				"  Fix: provide the bookmark name used when saving with 'glassbox session save --name <name>'",
+		)
+	}
 	query := `SELECT id FROM sessions WHERE name = ?`
 	var id string
 	if err := s.db.QueryRowContext(ctx, query, name).Scan(&id); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("session name not found: %s", name)
+			return nil, fmt.Errorf(
+				"session name not found: %q\n"+
+					"  Fix: run 'glassbox session list' to see saved session names",
+				name,
+			)
 		}
 		return nil, fmt.Errorf("failed to load session by name: %w", err)
 	}
