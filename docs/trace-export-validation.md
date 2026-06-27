@@ -380,6 +380,26 @@ cannot specify both --export and --print
 
 **Validation:**
 - Path must not end with `/` or `\`
+- Produces a deterministic JSON envelope with `schema_version`, `generated_at`, and a nested `trace` object
+
+**Schema version:**
+The output envelope always embeds the current `schema_version` (e.g. `"1.0"`). The version is defined by the `CurrentJSONSchemaVersion` constant in the trace package — it is never hardcoded at call sites, so all paths stay in sync automatically when the schema evolves.
+
+**Loading files back:**
+`glassbox trace <file>` can load files written by `--output-json`. The loader detects the `schema_version` string envelope and validates it before parsing:
+
+```
+unsupported schema_version "99.0" in trace file "trace.json"
+  This binary supports schema versions: "1.0"
+  Fix: re-export the trace with the current CLI version, or upgrade Glassbox
+```
+
+Files written by a slightly older minor version produce a deprecation warning but load successfully:
+
+```
+Warning: trace file "old-trace.json" uses schema_version "0.9"; current is "1.0"
+  Consider re-exporting with the current CLI for full compatibility
+```
 
 ### `--export-svg`
 
@@ -474,6 +494,145 @@ trace file is required
   Or:    glassbox trace --file <trace-file>
   Run 'glassbox trace --help' for all available options
 ```
+
+---
+
+## Schema Stability and Upgrades
+
+The `--output-json` flag produces a structured envelope with an explicit `schema_version` field. This section explains how Glassbox handles schema versioning, loading older files, and detecting incompatible versions.
+
+### Schema Version Format
+
+Schema versions use `MAJOR.MINOR` notation (e.g. `"1.0"`):
+
+- **MAJOR** changes indicate breaking structural changes to the envelope or field layouts. Files from a different major version cannot be loaded.
+- **MINOR** changes add new optional fields. Files from older minor versions load with a deprecation warning. Files from newer minor versions that are explicitly listed in `SupportedJSONSchemaVersions` also load successfully.
+
+The current schema version constant is `CurrentJSONSchemaVersion = "1.0"`.
+
+### Two JSON Envelope Formats
+
+Glassbox uses two different JSON shapes depending on the export path:
+
+| Flag | Envelope shape | Version field |
+|------|----------------|---------------|
+| `--output-json` | `{"schema_version":"1.0","generated_at":"...","trace":{...}}` | String: `"1.0"` |
+| `--export --format json` | `{"version":{"major":1,"minor":0,"patch":0},"trace":{...}}` | Semver object |
+
+`glassbox trace` detects and handles both shapes automatically. The detection is done by probing for the `schema_version` string key (ExportJSON shape) versus the `version` object key (VersionedTrace shape).
+
+### Unsupported Schema Version Error
+
+```
+unsupported schema_version "99.0" in trace file "trace.json"
+  This binary supports schema versions: "1.0"
+  Fix: re-export the trace with the current CLI version, or upgrade Glassbox
+```
+
+### Older Minor Version Warning
+
+```
+Warning: trace file "old-trace.json" uses schema_version "0.9"; current is "1.0"
+  Consider re-exporting with the current CLI for full compatibility
+```
+
+### Legacy File Warning (No Envelope)
+
+Files produced before the schema envelope was introduced load with a warning:
+
+```
+Warning: loaded legacy trace format (no version info)
+  Consider re-exporting with current version for full compatibility
+```
+
+### ExportJSON Schema Validation Function
+
+`ValidateJSONSchemaVersion(version string) error` can be called independently to validate any schema version string before file I/O. It rejects:
+
+- Empty or whitespace-only strings
+- Strings not in `MAJOR.MINOR` format
+- Non-numeric components
+- Version strings not present in `SupportedJSONSchemaVersions`
+
+All errors include a `Fix:` hint and reference the current expected version.
+
+---
+
+## Path Normalization and Safety
+
+All trace export output paths go through a security-aware validation layer before any file I/O begins. This section describes what is checked, what errors are produced, and how the checks differ from a simple trailing-slash guard.
+
+### What is validated
+
+Every output path flag (`--export`, `--output-json`, `--export-svg`, `--export-markdown`, `--snapshot`) and every input path flag (`--annotations`, `--gas-model`) is now processed through:
+
+1. **Null-byte rejection** — paths containing `\x00` are rejected immediately (shell injection risk)
+2. **`filepath.Clean` + `filepath.Abs`** — resolves `.` and `..` components to their absolute form before any existence check
+3. **Symlink resolution** — `filepath.EvalSymlinks` is called so that a symlink pointing outside an allowed root is caught, not just the raw string
+4. **Existing-directory guard** — if the path already refers to a directory on disk, the write is rejected with a message that includes the flag name and a suggested filename
+
+For input paths the validator additionally checks that the file exists and is not a directory.
+
+### Error message format
+
+All path errors include the flag name (`--export`, `--output-json`, etc.) so the failing flag is unambiguous:
+
+**Null byte:**
+```
+--export: path contains null bytes and cannot be used: "/path/to/trace\x00.html"
+```
+
+**Existing directory:**
+```
+--output-json: "/traces" is a directory; provide a full file path (e.g. "/traces/output.json")
+```
+
+**Missing input file:**
+```
+--annotations: file not found: "/path/to/annotations.json"
+  Check that the path is correct and the file exists
+```
+
+**Path traversal (`--trace-output` via `ValidateTraceInputs`):**
+```
+--trace-output "../../../etc/passwd" contains directory traversal sequences (..)
+  Fix: use absolute paths or relative paths without '..' for security
+  Example: use './output/trace.html' instead of '../output/trace.html'
+```
+
+### The traversal detection fix
+
+The old traversal check used `strings.Contains(path, "..")` which produced false positives for filenames that legitimately contain double dots (e.g. `my..trace.html`) and could miss Windows-style traversal paths.
+
+The new check uses `filepath.Clean` first:
+
+```go
+cleaned := filepath.Clean(outputPath)
+if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+    // traversal detected
+}
+```
+
+This correctly:
+- Accepts `my..trace.html` (double dot in filename, not a traversal component)
+- Rejects `../trace.html` and `../../etc/passwd` after cleaning
+- Handles both POSIX (`/`) and Windows (`\`) separators
+
+### Coverage by command
+
+| Flag | Command | Validator |
+|------|---------|-----------|
+| `--export` | `trace` | `ValidateOutputPath` → `NormalizePath` |
+| `--output-json` | `trace` | `ValidateOutputPath` → `NormalizePath` |
+| `--export-svg` | `trace` | `ValidateOutputPath` → `NormalizePath` |
+| `--export-markdown` | `trace` | `ValidateOutputPath` → `NormalizePath` |
+| `--annotations` | `trace` | `ValidateInputPath` → `NormalizePath` |
+| `--gas-model` | `trace` | `ValidateInputPath` → `NormalizePath` |
+| trace file argument | `trace` | `ValidateInputPath` → `NormalizePath` |
+| `--snapshot` (export) | `export` | `ValidateOutputPath` → `NormalizePath` |
+| `--audit-log` | all | `ValidateOutputPath` → `NormalizePath` |
+| `--trace-output` | `debug` | `ValidateTraceInputs` + `ValidateDebugOutputPaths` |
+| `--save-snapshots`, `--export-svg` | `debug` | `ValidateDebugOutputPaths` → `NormalizePath` |
 
 ---
 

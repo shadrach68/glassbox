@@ -140,47 +140,30 @@ Performance notes:
 					traceExportFormat,
 				))
 			}
-			// Export path must not look like a bare directory.
-			if strings.HasSuffix(traceExportPath, "/") || strings.HasSuffix(traceExportPath, "\\") {
-				failures = append(failures, fmt.Sprintf(
-					"--export %q looks like a directory path; provide a full file path\n"+
-						"  Fix: specify a filename (e.g. --export ./traces/output.html)\n"+
-						"  Example: glassbox trace --export ./traces/report.html execution.json",
-					traceExportPath,
-				))
+			// Validate path safety: null bytes, symlink resolution, existing-directory guard.
+			if _, err := ValidateOutputPath("export", traceExportPath); err != nil {
+				failures = append(failures, err.Error())
 			}
 		}
 
 		// Validate --export-markdown path (deprecated alias).
 		if traceExportMarkdown != "" {
-			if strings.HasSuffix(traceExportMarkdown, "/") || strings.HasSuffix(traceExportMarkdown, "\\") {
-				failures = append(failures, fmt.Sprintf(
-					"--export-markdown %q looks like a directory path; provide a full file path\n"+
-						"  Fix: specify a filename (e.g. --export-markdown ./traces/report.md)",
-					traceExportMarkdown,
-				))
+			if _, err := ValidateOutputPath("export-markdown", traceExportMarkdown); err != nil {
+				failures = append(failures, err.Error())
 			}
 		}
 
 		// Validate --output-json path.
 		if traceOutputJSON != "" {
-			if strings.HasSuffix(traceOutputJSON, "/") || strings.HasSuffix(traceOutputJSON, "\\") {
-				failures = append(failures, fmt.Sprintf(
-					"--output-json %q looks like a directory path; provide a full file path\n"+
-						"  Fix: specify a filename (e.g. --output-json ./traces/output.json)",
-					traceOutputJSON,
-				))
+			if _, err := ValidateOutputPath("output-json", traceOutputJSON); err != nil {
+				failures = append(failures, err.Error())
 			}
 		}
 
 		// Validate --export-svg path.
 		if traceExportSVG != "" {
-			if strings.HasSuffix(traceExportSVG, "/") || strings.HasSuffix(traceExportSVG, "\\") {
-				failures = append(failures, fmt.Sprintf(
-					"--export-svg %q looks like a directory path; provide a full file path\n"+
-						"  Fix: specify a filename (e.g. --export-svg ./traces/callgraph.svg)",
-					traceExportSVG,
-				))
+			if _, err := ValidateOutputPath("export-svg", traceExportSVG); err != nil {
+				failures = append(failures, err.Error())
 			}
 		}
 
@@ -213,23 +196,15 @@ Performance notes:
 		// correctness so the UI is consistent, but the overlay is skipped at
 		// runtime with a warning until the helper functions are available.
 		if traceAnnotationsFlag != "" {
-			if _, statErr := os.Stat(traceAnnotationsFlag); os.IsNotExist(statErr) {
-				failures = append(failures, fmt.Sprintf(
-					"--annotations: file not found: %q\n"+
-						"  Fix: provide a valid path to an annotations JSON file",
-					traceAnnotationsFlag,
-				))
+			if _, err := ValidateInputPath("annotations", traceAnnotationsFlag); err != nil {
+				failures = append(failures, err.Error())
 			}
 		}
 
 		// Validate --gas-model file exists when set.
 		if traceGasModelPath != "" {
-			if _, statErr := os.Stat(traceGasModelPath); os.IsNotExist(statErr) {
-				failures = append(failures, fmt.Sprintf(
-					"--gas-model: file not found: %q\n"+
-						"  Fix: provide a valid path to a gas model JSON file",
-					traceGasModelPath,
-				))
+			if _, err := ValidateInputPath("gas-model", traceGasModelPath); err != nil {
+				failures = append(failures, err.Error())
 			}
 		}
 
@@ -268,15 +243,19 @@ Performance notes:
 					"  Run 'glassbox trace --help' for all available options")
 		}
 
-		// Verify the trace file exists and is readable before doing any work.
-		if _, err := os.Stat(filename); os.IsNotExist(err) {
+		// Validate the trace file path — normalizes, resolves symlinks, checks
+		// existence and readability using the security-aware path validator.
+		normalizedFilename, pathErr := ValidateInputPath("file", filename)
+		if pathErr != nil {
+			// Produce a user-friendly error that includes the original value.
 			return errors.WrapValidationError(fmt.Sprintf(
-				"trace file not found: %q\n"+
+				"trace file not found or not readable: %q\n"+
 					"  Fix: verify the path is correct and the file exists\n"+
 					"  Tip: trace files are produced by 'glassbox debug --trace-output <file>'",
 				filename,
 			))
 		}
+		filename = normalizedFilename
 
 		var loadStart time.Time
 		if traceShowTimingFlag {
@@ -380,7 +359,7 @@ Performance notes:
 			if traceShowTimingFlag {
 				jsonStart = time.Now()
 			}
-			jsonData, err := executionTrace.ExportJSON("1.0", time.Now())
+			jsonData, err := executionTrace.ExportJSON(trace.CurrentJSONSchemaVersion, time.Now())
 			if err != nil {
 				return errors.WrapValidationError(fmt.Sprintf(
 					"failed to serialize trace as JSON: %v\n"+

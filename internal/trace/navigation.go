@@ -405,10 +405,7 @@ func (t *ExecutionTrace) ExportJSON(schemaVersion string, generatedAt time.Time)
 		gen = time.Now()
 	}
 
-	decodedEvents := t.DecodedEvents
-	if len(decodedEvents) == 0 {
-		decodedEvents = DecodeDiagnosticEventsWithSchemas(t.DiagnosticEvents, nil)
-	}
+	decodedEvents := DecodeDiagnosticEventsWithSchemas(t.DiagnosticEvents, nil)
 
 	exportObj := map[string]interface{}{
 		"schema_version": schemaVersion,
@@ -420,6 +417,7 @@ func (t *ExecutionTrace) ExportJSON(schemaVersion string, generatedAt time.Time)
 			"states":            states,
 			"snapshots":         snaps,
 			"diagnostic_events": t.DiagnosticEvents,
+			"decoded_events":    decodedEvents,
 			"annotations":       t.Annotations,
 			"subcall_graph":     exportSubcallGraph(t.SubcallGraph()),
 		},

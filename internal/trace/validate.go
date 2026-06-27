@@ -5,6 +5,7 @@ package trace
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -98,20 +99,20 @@ func ValidateTraceInputs(verbosity, exportFormat, eventFilter, outputPath string
 				outputPath,
 			))
 		}
-		
-		// Validate parent directory exists or can be created
-		// Note: We only check for obviously invalid paths here; actual directory creation happens at write time
-		if strings.Contains(outputPath, "\x00") {
+
+		// Null bytes in paths are a shell-injection risk.
+		if strings.ContainsRune(outputPath, 0) {
 			failures = append(failures, fmt.Sprintf(
 				"--trace-output contains null bytes which are not allowed in file paths\n"+
 					"  Fix: remove any null bytes from the path specification",
 			))
 		}
-		
-		// Check for suspicious path traversal patterns
-		if strings.Contains(outputPath, "..") {
-			// This is just a warning-level check; the actual path validation happens in path_safety.go
-			// But we can provide early feedback
+
+		// Use filepath.Clean to reliably detect traversal after normalisation.
+		// A string-contains("..")  check would falsely flag names like "..safe"
+		// or legitimate double-dot-free paths on some platforms.
+		cleaned := filepath.Clean(outputPath)
+		if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 			failures = append(failures, fmt.Sprintf(
 				"--trace-output %q contains directory traversal sequences (..)\n"+
 					"  Fix: use absolute paths or relative paths without '..' for security\n"+
@@ -300,6 +301,75 @@ func ValidateTraceExportParams(trace *ExecutionTrace, format, outputPath string,
 		return &TraceInputError{Failures: failures}
 	}
 	return nil
+}
+
+// ValidateJSONSchemaVersion validates a schema_version string as found in the
+// ExportJSON envelope produced by --output-json. It rejects empty, malformed
+// (not MAJOR.MINOR), or unsupported version strings with actionable messages.
+//
+// This is a pure-function validator suitable for use in PreRunE or any point
+// where a schema version string is known before file I/O begins.
+func ValidateJSONSchemaVersion(version string) error {
+	if strings.TrimSpace(version) == "" {
+		return &TraceInputError{Failures: []string{
+			"schema_version is empty — a valid version string is required\n" +
+				"  Expected format: \"MAJOR.MINOR\" (e.g. \"1.0\")\n" +
+				"  Fix: use the current schema version: \"" + CurrentJSONSchemaVersion + "\"",
+		}}
+	}
+
+	// Must match MAJOR.MINOR pattern (digits only, exactly two components).
+	parts := strings.Split(version, ".")
+	if len(parts) != 2 {
+		return &TraceInputError{Failures: []string{fmt.Sprintf(
+			"schema_version %q is not in MAJOR.MINOR format\n"+
+				"  Expected a two-component version string (e.g. \"1.0\")\n"+
+				"  Fix: use the current schema version: %q",
+			version, CurrentJSONSchemaVersion,
+		)}}
+	}
+	for _, p := range parts {
+		if len(p) == 0 {
+			return &TraceInputError{Failures: []string{fmt.Sprintf(
+				"schema_version %q contains an empty component\n"+
+					"  Fix: use a valid version such as %q",
+				version, CurrentJSONSchemaVersion,
+			)}}
+		}
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return &TraceInputError{Failures: []string{fmt.Sprintf(
+					"schema_version %q contains non-numeric characters\n"+
+						"  Expected: digits only (e.g. \"1.0\")\n"+
+						"  Fix: use a valid schema version such as %q",
+					version, CurrentJSONSchemaVersion,
+				)}}
+			}
+		}
+	}
+
+	if !IsJSONSchemaVersionSupported(version) {
+		return &TraceInputError{Failures: []string{fmt.Sprintf(
+			"schema_version %q is not supported by this version of Glassbox\n"+
+				"  Supported versions: %s\n"+
+				"  Fix: re-export the trace with the current CLI, which produces schema version %q\n"+
+				"  Tip: run 'glassbox trace --output-json <file> <trace-file>' to re-export",
+			version,
+			joinSupportedVersions(),
+			CurrentJSONSchemaVersion,
+		)}}
+	}
+
+	return nil
+}
+
+// joinSupportedVersions formats SupportedJSONSchemaVersions for error messages.
+func joinSupportedVersions() string {
+	parts := make([]string, len(SupportedJSONSchemaVersions))
+	for i, v := range SupportedJSONSchemaVersions {
+		parts[i] = fmt.Sprintf("%q", v)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // ValidateTraceFormatCompatibility checks if the trace data is compatible with the target export format.
