@@ -15,6 +15,7 @@ import (
 
 	"github.com/dotandev/glassbox/internal/logger"
 	"github.com/dotandev/glassbox/internal/simulator"
+	"github.com/dotandev/glassbox/internal/version"
 	_ "modernc.org/sqlite"
 )
 
@@ -293,6 +294,7 @@ func (s *Store) Save(ctx context.Context, data *Data) error {
 	}
 	data.LastAccessAt = now
 	data.SchemaVersion = SchemaVersion
+	data.ErstVersion = version.Version
 
 	if data.EnvFingerprint == "" {
 		data.EnvFingerprint = BuildEnvFingerprint()
