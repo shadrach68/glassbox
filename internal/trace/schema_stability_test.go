@@ -423,6 +423,7 @@ func TestCheckSchemaCompatibility_PatchIgnored(t *testing.T) {
 	}
 }
 
+
 // ── ExportMetadata.Version wired to CurrentJSONSchemaVersion ─────────────────
 
 // TestExportMetadataVersion_MatchesCurrentSchemaVersion verifies that the
