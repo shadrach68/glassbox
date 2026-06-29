@@ -22,8 +22,15 @@ func BuildEnvFingerprint() string {
 		"goarch":           runtime.GOARCH,
 		"go_version":       runtime.Version(),
 	}
-	b, _ := json.Marshal(info)
+	b, err := json.Marshal(info)
+	if err != nil {
+		// Fall back to a deterministic fingerprint built from individual fields
+		// without JSON encoding so that a marshal failure never produces an
+		// empty or zero-value fingerprint.
+		raw := version.Version + "|" + runtime.GOOS + "|" + runtime.GOARCH + "|" + runtime.Version()
+		sum := sha256.Sum256([]byte(raw))
+		return fmt.Sprintf("sha256:%s", hex.EncodeToString(sum[:])[:32])
+	}
 	sum := sha256.Sum256(b)
-	s := hex.EncodeToString(sum[:])
-	return fmt.Sprintf("sha256:%s", s[:32])
+	return fmt.Sprintf("sha256:%s", hex.EncodeToString(sum[:])[:32])
 }

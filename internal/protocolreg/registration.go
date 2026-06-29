@@ -47,6 +47,14 @@ func NewRegistrar() (*Registrar, error) {
 		return nil, fmt.Errorf("resolve absolute executable path: %w", err)
 	}
 
+	if _, err := os.Stat(executablePath); err != nil {
+		return nil, fmt.Errorf(
+			"executable not found at %s: %w\n"+
+				"  Fix: ensure the glassbox binary is installed correctly and the path is not a broken symlink",
+			executablePath, err,
+		)
+	}
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve user home directory: %w", err)

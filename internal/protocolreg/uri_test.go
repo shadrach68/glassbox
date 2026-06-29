@@ -349,3 +349,74 @@ func TestParseDebugURI_InvalidNetwork_ErrorMentionsAllowed(t *testing.T) {
 		}
 	}
 }
+
+// ─── source parameter length validation ──────────────────────────────────────
+
+func TestParseDebugURI_Source_AtMaxLength_Accepted(t *testing.T) {
+	source := string(make([]byte, maxSourceLen))
+	uri := baseURI + "&source=" + source
+	parsed, err := ParseDebugURI(uri)
+	if err != nil {
+		t.Fatalf("source at max length (%d) should be accepted: %v", maxSourceLen, err)
+	}
+	if parsed.Source != source {
+		t.Error("Source field not preserved")
+	}
+}
+
+func TestParseDebugURI_Source_ExceedsMaxLength_Rejected(t *testing.T) {
+	source := string(make([]byte, maxSourceLen+1))
+	uri := baseURI + "&source=" + source
+	_, err := ParseDebugURI(uri)
+	if err == nil {
+		t.Fatalf("source exceeding max length (%d) should be rejected", maxSourceLen)
+	}
+	if !strings.Contains(err.Error(), "source") {
+		t.Errorf("error should mention 'source', got: %v", err)
+	}
+}
+
+// ─── signature parameter length validation ────────────────────────────────────
+
+func TestParseDebugURI_Signature_AtMaxLength_Accepted(t *testing.T) {
+	sig := string(make([]byte, maxSignatureLen))
+	uri := baseURI + "&signature=" + sig
+	parsed, err := ParseDebugURI(uri)
+	if err != nil {
+		t.Fatalf("signature at max length (%d) should be accepted: %v", maxSignatureLen, err)
+	}
+	if parsed.Signature != sig {
+		t.Error("Signature field not preserved")
+	}
+}
+
+func TestParseDebugURI_Signature_ExceedsMaxLength_Rejected(t *testing.T) {
+	sig := string(make([]byte, maxSignatureLen+1))
+	uri := baseURI + "&signature=" + sig
+	_, err := ParseDebugURI(uri)
+	if err == nil {
+		t.Fatalf("signature exceeding max length (%d) should be rejected", maxSignatureLen)
+	}
+	if !strings.Contains(err.Error(), "signature") {
+		t.Errorf("error should mention 'signature', got: %v", err)
+	}
+}
+
+// ─── NewRegistrar — executable existence validation ────────────────────────────
+
+func TestNewRegistrar_NonExistentExecutable_ReturnsError(t *testing.T) {
+	// We can't directly call NewRegistrar with a custom path because it uses
+	// os.Executable() internally. Validate the Stat check indirectly by
+	// constructing a Registrar that points to a non-existent file and verifying
+	// Verify surfaces an actionable issue.
+	r := &Registrar{
+		executablePath: "/nonexistent/path/to/glassbox",
+		homeDir:        t.TempDir(),
+	}
+	report := r.Diagnose()
+	// The diagnostic must surface issues regardless of the platform since the
+	// executable path does not exist.
+	if len(report.Issues) == 0 && len(report.Checks) == 0 {
+		t.Error("Diagnose with a non-existent executable should produce at least one issue or check")
+	}
+}

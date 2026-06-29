@@ -13,6 +13,11 @@ import (
 
 var txHashPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
+const (
+	maxSourceLen    = 256
+	maxSignatureLen = 512
+)
+
 // allowedNetworks is the set of valid network identifiers for the deep link.
 var allowedNetworks = map[string]bool{
 	"testnet":   true,
@@ -113,12 +118,28 @@ func ParseDebugURI(raw string) (*ParsedDebugURI, error) {
 		return nil, fmt.Errorf("invalid network %q: must be one of testnet, mainnet, futurenet", network)
 	}
 
+	source := q.Get("source")
+	if len(source) > maxSourceLen {
+		return nil, fmt.Errorf(
+			"source parameter is too long (%d characters, max %d)",
+			len(source), maxSourceLen,
+		)
+	}
+
+	signature := q.Get("signature")
+	if len(signature) > maxSignatureLen {
+		return nil, fmt.Errorf(
+			"signature parameter is too long (%d characters, max %d)",
+			len(signature), maxSignatureLen,
+		)
+	}
+
 	result := &ParsedDebugURI{
 		Raw:             raw,
 		TransactionHash: transactionHash,
 		Network:         network,
-		Source:          q.Get("source"),
-		Signature:       q.Get("signature"),
+		Source:          source,
+		Signature:       signature,
 	}
 
 	// --- op / operation (optional, "op" takes precedence) ---

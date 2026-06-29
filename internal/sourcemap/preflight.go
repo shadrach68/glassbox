@@ -58,6 +58,7 @@ func (r *PreflightReport) Summary() string {
 // required (or strongly recommended) for accurate source mapping.
 //
 // Checks performed:
+//   - projectRoot, when non-empty, exists and is a directory (error if not)
 //   - WASM target directory exists under projectRoot (target/wasm32-unknown-unknown)
 //   - At least one .wasm file is present in the release output directory
 //   - GLASSBOX_SKIP_SOURCE_MAPPING env var is not set to a truthy value
@@ -70,6 +71,27 @@ func RunSourceMapPreflight(projectRoot string) *PreflightReport {
 
 	// ── WASM build artifact checks ────────────────────────────────────────────
 	if projectRoot != "" {
+		rootInfo, rootErr := os.Stat(projectRoot)
+		if os.IsNotExist(rootErr) {
+			report.Issues = append(report.Issues, PreflightIssue{
+				Check:       "project_root",
+				Severity:    "error",
+				Description: fmt.Sprintf("project root directory does not exist: %s", projectRoot),
+				Hint:        "Ensure the project root path is correct and the directory has been created.",
+			})
+			report.OK = false
+			return report
+		} else if rootErr == nil && !rootInfo.IsDir() {
+			report.Issues = append(report.Issues, PreflightIssue{
+				Check:       "project_root",
+				Severity:    "error",
+				Description: fmt.Sprintf("%q is not a directory", projectRoot),
+				Hint:        "Provide the path to the contract project root directory, not a file.",
+			})
+			report.OK = false
+			return report
+		}
+
 		wasmTargetDir := filepath.Join(projectRoot, "target", "wasm32-unknown-unknown", "release")
 		if _, err := os.Stat(wasmTargetDir); os.IsNotExist(err) {
 			report.Issues = append(report.Issues, PreflightIssue{

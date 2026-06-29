@@ -5,6 +5,7 @@ package simulator
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -347,5 +348,85 @@ func TestNewRegressionHarness_ZeroWorkers_DefaultsToFour(t *testing.T) {
 	harness := NewRegressionHarness(&MockRunner{}, nil, 0)
 	if harness.MaxWorkers != 4 {
 		t.Errorf("expected MaxWorkers=4 for 0 input, got %d", harness.MaxWorkers)
+	}
+}
+
+// ── MaxWorkers runtime guard ───────────────────────────────────────────────────
+
+// TestRunRegressionTests_MaxWorkersMutatedToZero_DoesNotDeadlock verifies that
+// mutating MaxWorkers to 0 after construction is corrected inside
+// RunRegressionTests and does not deadlock the goroutine pool.
+func TestRunRegressionTests_MaxWorkersMutatedToZero_DoesNotDeadlock(t *testing.T) {
+	harness := NewRegressionHarness(&MockRunner{}, nil, 4)
+	// Directly mutate MaxWorkers to 0 after construction — simulates a caller
+	// that bypasses NewRegressionHarness defaults.
+	harness.MaxWorkers = 0
+
+	// This call should not deadlock.  Since fetchFailedTransactions returns an
+	// empty list, RunRegressionTests returns an error before spawning goroutines,
+	// which is fine — the semaphore is created AFTER the MaxWorkers guard, so
+	// the guard runs before the channel allocation.
+	_, err := harness.RunRegressionTests(context.Background(), 5, nil, 0)
+	// We expect an error (no transactions found), not a deadlock or panic.
+	if err == nil {
+		t.Error("expected error when no transactions are found; got nil")
+	}
+	// MaxWorkers must have been corrected to 4.
+	if harness.MaxWorkers != 4 {
+		t.Errorf("RunRegressionTests should have corrected MaxWorkers to 4, got %d", harness.MaxWorkers)
+	}
+}
+
+// TestRunRegressionTests_MaxWorkersMutatedToNegative_DoesNotDeadlock verifies
+// that a negative MaxWorkers is also corrected at runtime.
+func TestRunRegressionTests_MaxWorkersMutatedToNegative_DoesNotDeadlock(t *testing.T) {
+	harness := NewRegressionHarness(&MockRunner{}, nil, 4)
+	harness.MaxWorkers = -3
+
+	_, err := harness.RunRegressionTests(context.Background(), 5, nil, 0)
+	if err == nil {
+		t.Error("expected error when no transactions are found; got nil")
+	}
+	if harness.MaxWorkers != 4 {
+		t.Errorf("RunRegressionTests should have corrected MaxWorkers to 4, got %d", harness.MaxWorkers)
+	}
+}
+
+// ── MockRunner — additional coverage ─────────────────────────────────────────
+
+// TestMockRunner_NilRunFunc_DefaultsToSuccess verifies that a MockRunner with
+// no RunFunc set returns a success response rather than panicking.
+func TestMockRunner_NilRunFunc_DefaultsToSuccess(t *testing.T) {
+	m := &MockRunner{} // no RunFunc
+	resp, err := m.Run(context.Background(), &SimulationRequest{EnvelopeXdr: "test"})
+	if err != nil {
+		t.Errorf("nil RunFunc should return a success response, got error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("nil RunFunc should return a non-nil response")
+	}
+	if resp.Status != "success" {
+		t.Errorf("nil RunFunc response status = %q, want \"success\"", resp.Status)
+	}
+}
+
+// TestMockRunner_CloseWithError_ReturnsError verifies that CloseFunc errors are
+// correctly propagated.
+func TestMockRunner_CloseWithError_ReturnsError(t *testing.T) {
+	wantErr := fmt.Errorf("close failed: resource busy")
+	m := &MockRunner{
+		CloseFunc: func() error { return wantErr },
+	}
+	if err := m.Close(); err != wantErr {
+		t.Errorf("Close() = %v, want %v", err, wantErr)
+	}
+}
+
+// TestMockRunner_NilCloseFunc_ReturnsNil verifies that a MockRunner with no
+// CloseFunc returns nil from Close (safe no-op).
+func TestMockRunner_NilCloseFunc_ReturnsNil(t *testing.T) {
+	m := &MockRunner{}
+	if err := m.Close(); err != nil {
+		t.Errorf("nil CloseFunc Close() = %v, want nil", err)
 	}
 }

@@ -51,22 +51,26 @@ Available subcommands:
   resume  - Restore a saved session
   list    - View all saved sessions
   delete  - Remove a saved session
+  recover - Restore a session interrupted by an unexpected process exit
   doctor  - Check saved sessions for schema and integrity problems`,
 	Example: `  # Save current debug session
-  Glassbox session save
+  glassbox session save
 
   # List all sessions
-  Glassbox session list
+  glassbox session list
 
   # Resume a specific session
-  Glassbox session resume <session-id>
+  glassbox session resume <session-id>
 
   # Save and load a named bookmark
-  Glassbox session save --name payroll-bug
-  Glassbox session load payroll-bug
+  glassbox session save --name payroll-bug
+  glassbox session load payroll-bug
+
+  # Recover a session after an unexpected exit
+  glassbox session recover
 
   # Delete a session
-  Glassbox session delete <session-id>`,
+  glassbox session delete <session-id>`,
 }
 
 var sessionSaveCmd = &cobra.Command{
@@ -87,13 +91,16 @@ Validation:
 
   If any check fails an actionable error is printed with a remediation hint.`,
 	Example: `  # Save with auto-generated ID
-  Glassbox session save
+  glassbox session save
 
   # Save with custom ID
-  Glassbox session save --id my-debug-session
+  glassbox session save --id my-debug-session
 
   # Save a named bookmark
-  Glassbox session save --name payroll-bug`,
+  glassbox session save --name payroll-bug
+
+  # Save and pin a custom RPC endpoint
+  glassbox session save --pin-endpoint https://soroban-testnet.stellar.org`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
@@ -178,14 +185,17 @@ know exactly what to fix before continuing.
 
 Use 'Glassbox session list' to see available session IDs and names.`,
 	Example: `  # Resume a session
-  Glassbox session resume abc123
+  glassbox session resume abc123
 
   # Load by bookmark name
-  Glassbox session load payroll-bug
+  glassbox session load payroll-bug
 
-  # List available sessions first
-  Glassbox session list
-  Glassbox session resume <session-id-or-name>`,
+  # List available sessions first, then resume
+  glassbox session list
+  glassbox session resume <session-id-or-name>
+
+  # Run diagnostics if a session behaves unexpectedly
+  glassbox session doctor`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
@@ -314,7 +324,11 @@ var sessionListCmd = &cobra.Command{
 
 Displays session ID, network, last access time, and transaction hash.`,
 	Example: `  # List all sessions
-  Glassbox session list`,
+  glassbox session list
+
+  # Then resume or delete by the ID shown
+  glassbox session resume <session-id>
+  glassbox session delete <session-id>`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
@@ -371,7 +385,11 @@ var sessionDeleteCmd = &cobra.Command{
 
 Use 'Glassbox session list' to see available sessions.`,
 	Example: `  # Delete a specific session
-  Glassbox session delete abc123`,
+  glassbox session delete abc123
+
+  # List sessions first to find the ID
+  glassbox session list
+  glassbox session delete <session-id>`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
@@ -418,8 +436,11 @@ Validation:
   Missing session ID, transaction hash, network, or invalid PID values are
   detected and reported with actionable diagnostics. If the checkpoint is
   corrupt, it is cleared and guidance is printed for starting a fresh session.`,
-	Example: `  # Check for and restore an orphaned session
-  glassbox session recover`,
+	Example: `  # Check for and restore an orphaned session after a crash
+  glassbox session recover
+
+  # If recovery finds nothing, start a fresh debug session
+  glassbox debug <tx-hash> --network testnet`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
@@ -567,8 +588,11 @@ var sessionDoctorCmd = &cobra.Command{
 
 Reports schema version mismatches, missing fields, and other integrity issues
 with actionable remediation hints for each degraded session.`,
-	Example: `  # Check all saved sessions
-  glassbox session doctor`,
+	Example: `  # Check all saved sessions for schema and integrity problems
+  glassbox session doctor
+
+  # Re-run the debug command to recreate any degraded sessions
+  glassbox debug <tx-hash> --network testnet`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()

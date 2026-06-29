@@ -26,6 +26,72 @@ func TestPreflight_EmptyProjectRoot_NoWasmIssues(t *testing.T) {
 	}
 }
 
+// ── projectRoot validation checks ────────────────────────────────────────────
+
+// TestPreflight_NonexistentProjectRoot_ErrorIssue verifies that a non-existent
+// projectRoot produces an error issue and sets report.OK=false.
+func TestPreflight_NonexistentProjectRoot_ErrorIssue(t *testing.T) {
+	t.Setenv("GLASSBOX_SKIP_SOURCE_MAPPING", "")
+	t.Setenv("GLASSBOX_SOURCE_MAP_CACHE", "")
+
+	report := RunSourceMapPreflight("/does/not/exist/project/root")
+	if report.OK {
+		t.Fatal("non-existent projectRoot must set report.OK=false")
+	}
+	requireIssueCheck(t, report, "project_root")
+}
+
+// TestPreflight_ProjectRootIsFile_ErrorIssue verifies that when projectRoot
+// points to a file (not a directory) an error issue is produced.
+func TestPreflight_ProjectRootIsFile_ErrorIssue(t *testing.T) {
+	t.Setenv("GLASSBOX_SKIP_SOURCE_MAPPING", "")
+	t.Setenv("GLASSBOX_SOURCE_MAP_CACHE", "")
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "notadir.rs")
+	if err := os.WriteFile(f, []byte("fn main() {}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report := RunSourceMapPreflight(f)
+	if report.OK {
+		t.Fatal("file path as projectRoot must set report.OK=false")
+	}
+	requireIssueCheck(t, report, "project_root")
+}
+
+// TestPreflight_ValidProjectRoot_NoRootIssue verifies that a valid directory as
+// projectRoot does not produce a project_root issue.
+func TestPreflight_ValidProjectRoot_NoRootIssue(t *testing.T) {
+	t.Setenv("GLASSBOX_SKIP_SOURCE_MAPPING", "")
+	t.Setenv("GLASSBOX_SOURCE_MAP_CACHE", "")
+
+	dir := t.TempDir()
+	report := RunSourceMapPreflight(dir)
+
+	for _, issue := range report.Issues {
+		if issue.Check == "project_root" {
+			t.Errorf("valid directory projectRoot should not produce a project_root issue; got: %+v", issue)
+		}
+	}
+}
+
+// TestPreflight_NonexistentProjectRoot_HintIsActionable verifies that the hint
+// for a non-existent projectRoot is non-empty and actionable.
+func TestPreflight_NonexistentProjectRoot_HintIsActionable(t *testing.T) {
+	t.Setenv("GLASSBOX_SKIP_SOURCE_MAPPING", "")
+	t.Setenv("GLASSBOX_SOURCE_MAP_CACHE", "")
+
+	report := RunSourceMapPreflight("/nonexistent/root")
+	for _, issue := range report.Issues {
+		if issue.Check == "project_root" {
+			if strings.TrimSpace(issue.Hint) == "" {
+				t.Error("project_root issue must have a non-empty actionable hint")
+			}
+		}
+	}
+}
+
 // ── WASM target directory checks ─────────────────────────────────────────────
 
 // TestPreflight_MissingWasmTargetDir_WarningIssue verifies that a project root
