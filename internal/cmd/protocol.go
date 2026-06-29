@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/dotandev/glassbox/internal/clioutput"
 	"github.com/dotandev/glassbox/internal/deeplink"
@@ -16,6 +17,9 @@ import (
 
 // protocolDiagnoseJSON controls whether protocol:diagnose emits JSON output.
 var protocolDiagnoseJSON bool
+
+// protocolDiagnoseFormat controls the output format for protocol:diagnose ("text" or "json").
+var protocolDiagnoseFormat string
 
 // protocolVerifyProbe runs an optional glassbox://doctor-probe handler check.
 var protocolVerifyProbe bool
@@ -35,6 +39,7 @@ var protocolRegisterCmd = &cobra.Command{
 		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "Registered GLASSBOX Protocol handler for %s://\n", protocolreg.Scheme)
+		fmt.Fprintln(cmd.OutOrStdout(), "Tip: run 'glassbox protocol:verify' to confirm the registration is working.")
 		return nil
 	},
 }
@@ -69,11 +74,23 @@ var protocolStatusCmd = &cobra.Command{
 			return err
 		}
 
-		if registrar.IsRegistered() {
+		diag := registrar.Diagnose()
+		for _, check := range diag.Checks {
+			fmt.Fprintf(cmd.OutOrStdout(), "[OK] %s\n", check)
+		}
+
+		if diag.Status == protocolreg.StatusOK {
 			fmt.Fprintln(cmd.OutOrStdout(), "GLASSBOX Protocol handler is currently REGISTERED")
 			return nil
 		}
 
+		fmt.Fprintln(cmd.ErrOrStderr(), "GLASSBOX Protocol handler is NOT REGISTERED")
+		if len(diag.RemediationSteps) > 0 {
+			fmt.Fprintln(cmd.ErrOrStderr(), "\nTo register the protocol handler:")
+			for i, step := range diag.RemediationSteps {
+				fmt.Fprintf(cmd.ErrOrStderr(), "  %d. %s\n", i+1, step)
+			}
+		}
 		return fmt.Errorf("GLASSBOX Protocol handler is NOT REGISTERED")
 	},
 }
@@ -150,7 +167,7 @@ var protocolHandlerCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		parsed, err := protocolreg.ParseDebugURI(args[0])
 		if err != nil {
-			return err
+			return fmt.Errorf("%w\n  Expected format: glassbox://debug/<64-char-hex>?network=<testnet|mainnet|futurenet>[&op=<n>][&view=<mode>]", err)
 		}
 
 		executablePath, err := os.Executable()
@@ -206,7 +223,12 @@ Exit codes:
 
 		report := registrar.Diagnose()
 
-		if protocolDiagnoseJSON {
+		// Validate and resolve the output format.
+		normalizedFormat := strings.ToLower(strings.TrimSpace(protocolDiagnoseFormat))
+		if normalizedFormat != "" && normalizedFormat != "text" && normalizedFormat != "json" {
+			return fmt.Errorf("invalid --format %q: must be 'text' or 'json'", protocolDiagnoseFormat)
+		}
+		if clioutput.WantsJSON(protocolDiagnoseJSON, normalizedFormat) {
 			return clioutput.Write(cmd.OutOrStdout(), "protocol:diagnose", report)
 		}
 
@@ -309,7 +331,9 @@ PERMISSION NOTES
 
 func init() {
 	protocolDiagnoseCmd.Flags().BoolVar(&protocolDiagnoseJSON, "json", false,
-		"Emit diagnostic report as JSON (for machine consumption)")
+		"Emit diagnostic report as JSON (shorthand for --format json)")
+	protocolDiagnoseCmd.Flags().StringVar(&protocolDiagnoseFormat, "format", "",
+		"Output format: 'text' (default) or 'json'")
 	protocolVerifyCmd.Flags().BoolVar(&protocolVerifyProbe, "probe", false,
 		"Run a dry-run glassbox://doctor-probe handler check after registration verification")
 

@@ -134,6 +134,13 @@ func (r *Registrar) Repair() *RepairResult {
 		return result
 	}
 
+	// When a conflicting handler was detected, record which binary is being displaced.
+	if diag.ConflictDetected {
+		result.Actions = append(result.Actions,
+			fmt.Sprintf("Conflicting registration detected (handler: %s); overwriting with current executable.",
+				diag.ConflictingHandler))
+	}
+
 	// Attempt re-registration.
 	result.Actions = append(result.Actions,
 		fmt.Sprintf("Attempting to register %s:// protocol handler on %s", Scheme, runtime.GOOS))

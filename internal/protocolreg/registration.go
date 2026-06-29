@@ -131,11 +131,19 @@ func (r *Registrar) registerWindows() error {
 		if cmdErr == nil && !strings.Contains(cmdOutput, r.executablePath) {
 			// The key exists and its open command references a different binary —
 			// this is a genuine registry conflict, not just a stale self-reference.
-			return ersterrors.ErrRegistryConflict
+			return fmt.Errorf(
+				"protocol registration conflict: %s\\shell\\open\\command is claimed by a different application: %w\n"+
+					"  Fix: run 'glassbox protocol:repair' to reclaim the registration",
+				windowsRegistryKey, ersterrors.ErrRegistryConflict,
+			)
 		}
 		if !strings.Contains(registryOutput, "glassbox") {
 			// If the key exists (err == nil) but (Default) doesn't contain 'glassbox', it's a conflict
-			return ersterrors.ErrRegistryConflict
+			return fmt.Errorf(
+				"protocol registration conflict: registry key %s appears to belong to another application: %w\n"+
+					"  Fix: run 'glassbox protocol:repair' to reclaim the registration",
+				windowsRegistryKey, ersterrors.ErrRegistryConflict,
+			)
 		}
 	}
 
@@ -205,6 +213,16 @@ func (r *Registrar) registerLinux() error {
 
 	if err := os.WriteFile(r.linuxDesktopPath(), []byte(r.linuxDesktopEntry()), 0o644); err != nil {
 		return fmt.Errorf("write desktop file: %w", err)
+	}
+
+	if !hasCommand("xdg-mime") {
+		return fmt.Errorf(
+			"xdg-mime is not installed: cannot register the glassbox:// MIME handler\n" +
+				"  Fix: install xdg-utils — try one of:\n" +
+				"    sudo apt install xdg-utils   (Debian/Ubuntu)\n" +
+				"    sudo dnf install xdg-utils   (Fedora/RHEL)\n" +
+				"    sudo pacman -S xdg-utils     (Arch Linux)",
+		)
 	}
 
 	if _, err := runCommand("xdg-mime", "default", linuxDesktopFile, linuxMimeType); err != nil {
