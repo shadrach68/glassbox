@@ -20,7 +20,7 @@ import (
 
 const (
 	// SchemaVersion tracks the database schema version for migrations
-	SchemaVersion = 1
+	SchemaVersion = 2
 
 	// DefaultTTL is the default time-to-live for sessions (30 days)
 	DefaultTTL = 30 * 24 * time.Hour
@@ -35,7 +35,7 @@ type Data struct {
 	Name          string    `json:"name,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	LastAccessAt  time.Time `json:"last_access_at"`
-	Status        string    `json:"status"` // active, saved, resumed, expired
+	Status        string    `json:"status"` // active, saved, resumed, recovered, expired
 	Network       string    `json:"network"`
 	HorizonURL    string    `json:"horizon_url"`
 	TxHash        string    `json:"tx_hash"`
@@ -43,6 +43,11 @@ type Data struct {
 	ResultXdr     string    `json:"result_xdr"`
 	ResultMetaXdr string    `json:"result_meta_xdr"`
 	PinnedEndpoint string   `json:"pinned_endpoint,omitempty"`
+
+	// Audit Chain Integrity [Issue #330]
+	AuditHash           string `json:"audit_hash,omitempty"`            // SHA-256 of the session payload
+	AuditSignature      string `json:"audit_signature,omitempty"`       // Ed25519 signature of the AuditHash
+	PreviousSessionHash string `json:"previous_session_hash,omitempty"` // AuditHash of the predecessor session
 
 	// Simulator I/O
 	SimRequestJSON  string `json:"sim_request_json"`  // JSON sent to glassbox-sim
@@ -111,6 +116,9 @@ func (s *Store) initSchema() error {
 		result_xdr TEXT,
 		result_meta_xdr TEXT,
 		pinned_endpoint TEXT,
+		audit_hash TEXT,
+		audit_signature TEXT,
+		previous_session_hash TEXT,
 		sim_request_json TEXT,
 		sim_response_json TEXT,
 		env_fingerprint TEXT,
@@ -120,6 +128,7 @@ func (s *Store) initSchema() error {
 	
 	CREATE INDEX IF NOT EXISTS idx_last_access ON sessions(last_access_at);
 	CREATE INDEX IF NOT EXISTS idx_tx_hash ON sessions(tx_hash);
+	CREATE INDEX IF NOT EXISTS idx_audit_hash ON sessions(audit_hash);
 	`
 
 	if _, err := s.db.Exec(query); err != nil {
@@ -132,14 +141,18 @@ func (s *Store) initSchema() error {
 		return fmt.Errorf("failed to create session name index: %w", err)
 	}
 
-	hasPinnedEndpoint, err := s.columnExists("sessions", "pinned_endpoint")
-	if err != nil {
+	// Schema migrations for existing databases
+	if err := s.ensureColumn("sessions", "pinned_endpoint", "TEXT"); err != nil {
 		return err
 	}
-	if !hasPinnedEndpoint {
-		if _, err := s.db.Exec(`ALTER TABLE sessions ADD COLUMN pinned_endpoint TEXT`); err != nil {
-			return fmt.Errorf("failed to migrate sessions schema: %w", err)
-		}
+	if err := s.ensureColumn("sessions", "audit_hash", "TEXT"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("sessions", "audit_signature", "TEXT"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("sessions", "previous_session_hash", "TEXT"); err != nil {
+		return err
 	}
 
 	return nil
@@ -220,9 +233,10 @@ func (s *Store) Save(ctx context.Context, data *Data) error {
 	query := `
 	INSERT INTO sessions (
 		id, name, created_at, last_access_at, status, network, horizon_url, tx_hash,
-		envelope_xdr, result_xdr, result_meta_xdr,
+		envelope_xdr, result_xdr, result_meta_xdr, pinned_endpoint,
+		audit_hash, audit_signature, previous_session_hash,
 		sim_request_json, sim_response_json, GLASSBOX_version, schema_version
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		name = excluded.name,
 		last_access_at = excluded.last_access_at,
@@ -234,6 +248,9 @@ func (s *Store) Save(ctx context.Context, data *Data) error {
 		result_xdr = excluded.result_xdr,
 		result_meta_xdr = excluded.result_meta_xdr,
 		pinned_endpoint = excluded.pinned_endpoint,
+		audit_hash = excluded.audit_hash,
+		audit_signature = excluded.audit_signature,
+		previous_session_hash = excluded.previous_session_hash,
 		sim_request_json = excluded.sim_request_json,
 		sim_response_json = excluded.sim_response_json,
 		env_fingerprint = excluded.env_fingerprint,
@@ -244,8 +261,9 @@ func (s *Store) Save(ctx context.Context, data *Data) error {
 	_, err := s.db.ExecContext(ctx, query,
 		data.ID, data.Name, data.CreatedAt, data.LastAccessAt, data.Status,
 		data.Network, data.HorizonURL, data.TxHash,
-		data.EnvelopeXdr, data.ResultXdr, data.ResultMetaXdr,
-		data.SimRequestJSON, data.SimResponseJSON, data.EnvFingerprint, data.ErstVersion, data.SchemaVersion,
+		data.EnvelopeXdr, data.ResultXdr, data.ResultMetaXdr, data.PinnedEndpoint,
+		data.AuditHash, data.AuditSignature, data.PreviousSessionHash,
+		data.SimRequestJSON, data.SimResponseJSON, data.ErstVersion, data.SchemaVersion,
 	)
 
 	if err != nil {
@@ -260,7 +278,8 @@ func (s *Store) Save(ctx context.Context, data *Data) error {
 func (s *Store) Load(ctx context.Context, sessionID string) (*Data, error) {
 	query := `
 	SELECT id, name, created_at, last_access_at, status, network, horizon_url, tx_hash,
-	       envelope_xdr, result_xdr, result_meta_xdr,
+	       envelope_xdr, result_xdr, result_meta_xdr, pinned_endpoint,
+	       audit_hash, audit_signature, previous_session_hash,
 	       sim_request_json, sim_response_json, env_fingerprint, GLASSBOX_version, schema_version
 	FROM sessions
 	WHERE id = ?
@@ -268,13 +287,12 @@ func (s *Store) Load(ctx context.Context, sessionID string) (*Data, error) {
 
 	var data Data
 	var createdAt, lastAccessAt string
-	var pinnedEndpoint sql.NullString
-
 	var envFP sql.NullString
 	err := s.db.QueryRowContext(ctx, query, sessionID).Scan(
 		&data.ID, &data.Name, &createdAt, &lastAccessAt, &data.Status,
 		&data.Network, &data.HorizonURL, &data.TxHash,
-		&data.EnvelopeXdr, &data.ResultXdr, &data.ResultMetaXdr,
+		&data.EnvelopeXdr, &data.ResultXdr, &data.ResultMetaXdr, &data.PinnedEndpoint,
+		&data.AuditHash, &data.AuditSignature, &data.PreviousSessionHash,
 		&data.SimRequestJSON, &data.SimResponseJSON, &envFP, &data.ErstVersion, &data.SchemaVersion,
 	)
 	if envFP.Valid {
@@ -345,7 +363,8 @@ func (s *Store) List(ctx context.Context, limit int) ([]*Data, error) {
 
 	query := `
 	SELECT id, name, created_at, last_access_at, status, network, horizon_url, tx_hash,
-	       envelope_xdr, result_xdr, result_meta_xdr,
+	       envelope_xdr, result_xdr, result_meta_xdr, pinned_endpoint,
+	       audit_hash, audit_signature, previous_session_hash,
 	       sim_request_json, sim_response_json, env_fingerprint, GLASSBOX_version, schema_version
 	FROM sessions
 	ORDER BY last_access_at DESC
@@ -362,13 +381,13 @@ func (s *Store) List(ctx context.Context, limit int) ([]*Data, error) {
 	for rows.Next() {
 		var data Data
 		var createdAt, lastAccessAt string
-		var pinnedEndpoint sql.NullString
 
 		envFP := sql.NullString{}
 		scanErr := rows.Scan(
 			&data.ID, &data.Name, &createdAt, &lastAccessAt, &data.Status,
 			&data.Network, &data.HorizonURL, &data.TxHash,
-			&data.EnvelopeXdr, &data.ResultXdr, &data.ResultMetaXdr,
+			&data.EnvelopeXdr, &data.ResultXdr, &data.ResultMetaXdr, &data.PinnedEndpoint,
+			&data.AuditHash, &data.AuditSignature, &data.PreviousSessionHash,
 			&data.SimRequestJSON, &data.SimResponseJSON, &envFP, &data.ErstVersion, &data.SchemaVersion,
 		)
 		if scanErr != nil {
@@ -552,6 +571,7 @@ type IntegrityReport struct {
 //   - LastAccessAt is not in the future (within a 1-minute clock-skew tolerance)
 //   - SchemaVersion is compatible with the current SchemaVersion constant
 //   - EnvelopeXdr is non-empty when SimRequestJSON is also non-empty
+//   - AuditHash and PreviousSessionHash are valid SHA-256 hex strings when set
 //
 // The function never modifies the session; it is safe to call concurrently.
 func ValidateIntegrity(data *Data) *IntegrityReport {
@@ -565,8 +585,8 @@ func ValidateIntegrity(data *Data) *IntegrityReport {
 	if data.ID == "" {
 		report.Issues = append(report.Issues, IntegrityIssue{
 			Field:       "ID",
-			Description: "session ID is empty",
-			Hint:        "This session record is corrupt. Delete it with 'glassbox session delete' and start a new debug session.",
+			Description: "session ID is missing or empty",
+			Hint:        "The session record is corrupt. Try starting a new debug session with 'glassbox debug <tx-hash>'.",
 		})
 	}
 
@@ -574,8 +594,14 @@ func ValidateIntegrity(data *Data) *IntegrityReport {
 	if data.TxHash == "" {
 		report.Issues = append(report.Issues, IntegrityIssue{
 			Field:       "TxHash",
-			Description: "transaction hash is empty",
+			Description: "transaction hash is missing or empty",
 			Hint:        "The session was saved without a transaction hash. Re-run 'glassbox debug <tx-hash>' to create a valid session.",
+		})
+	} else if len(data.TxHash) != 64 {
+		report.Issues = append(report.Issues, IntegrityIssue{
+			Field:       "TxHash",
+			Description: fmt.Sprintf("transaction hash %q has invalid length (%d, expected 64)", data.TxHash, len(data.TxHash)),
+			Hint:        "A Stellar transaction hash must be 64 hexadecimal characters.",
 		})
 	}
 
@@ -583,8 +609,8 @@ func ValidateIntegrity(data *Data) *IntegrityReport {
 	if data.Network == "" {
 		report.Issues = append(report.Issues, IntegrityIssue{
 			Field:       "Network",
-			Description: "network is empty",
-			Hint:        "The session is missing its network field. Delete and recreate it with --network testnet/mainnet/futurenet.",
+			Description: "network is missing or empty",
+			Hint:        "The session is missing its network field. Specify a network using --network (e.g., testnet, mainnet).",
 		})
 	} else {
 		validNetworks := map[string]bool{
@@ -593,8 +619,8 @@ func ValidateIntegrity(data *Data) *IntegrityReport {
 		if !validNetworks[data.Network] {
 			report.Issues = append(report.Issues, IntegrityIssue{
 				Field:       "Network",
-				Description: "network value " + data.Network + " is not a recognised Stellar network",
-				Hint:        "Accepted values are: testnet, mainnet, futurenet. Delete and recreate the session with a valid --network value.",
+				Description: fmt.Sprintf("network %q is not a recognized Stellar network", data.Network),
+				Hint:        "Accepted values are: testnet, mainnet, futurenet.",
 			})
 		}
 	}
@@ -603,7 +629,7 @@ func ValidateIntegrity(data *Data) *IntegrityReport {
 	if data.Status == "" {
 		report.Issues = append(report.Issues, IntegrityIssue{
 			Field:       "Status",
-			Description: "status is empty",
+			Description: "session status is missing or empty",
 			Hint:        "The session record is missing a status. It may have been created by an incompatible version of Glassbox.",
 		})
 	} else {
@@ -614,18 +640,49 @@ func ValidateIntegrity(data *Data) *IntegrityReport {
 		if !validStatuses[data.Status] {
 			report.Issues = append(report.Issues, IntegrityIssue{
 				Field:       "Status",
-				Description: "unknown status value: " + data.Status,
+				Description: fmt.Sprintf("unknown status value: %q", data.Status),
 				Hint:        "Valid status values are: active, saved, resumed, recovered, expired.",
 			})
 		}
+	}
+
+	// Audit Chain Integrity: AuditHash format
+	if data.AuditHash != "" {
+		if err := validateSHA256HexHash("audit_hash", data.AuditHash); err != nil {
+			report.Issues = append(report.Issues, IntegrityIssue{
+				Field:       "AuditHash",
+				Description: fmt.Sprintf("audit_hash is malformed: %v", err),
+				Hint:        "The audit hash must be a 64-character hexadecimal SHA-256 string.",
+			})
+		}
+	}
+
+	// Audit Chain Integrity: PreviousSessionHash format
+	if data.PreviousSessionHash != "" {
+		if err := validateSHA256HexHash("previous_session_hash", data.PreviousSessionHash); err != nil {
+			report.Issues = append(report.Issues, IntegrityIssue{
+				Field:       "PreviousSessionHash",
+				Description: fmt.Sprintf("previous_session_hash is malformed: %v", err),
+				Hint:        "The predecessor session hash must be a 64-character hexadecimal SHA-256 string.",
+			})
+		}
+	}
+
+	// Audit Chain Integrity: AuditSignature requires AuditHash
+	if data.AuditSignature != "" && data.AuditHash == "" {
+		report.Issues = append(report.Issues, IntegrityIssue{
+			Field:       "AuditHash",
+			Description: "audit_signature is present but audit_hash is missing",
+			Hint:        "A signature can only exist if there is a hash to sign. Re-sign the session to fix this.",
+		})
 	}
 
 	// Timestamps: CreatedAt must be non-zero
 	if data.CreatedAt.IsZero() {
 		report.Issues = append(report.Issues, IntegrityIssue{
 			Field:       "CreatedAt",
-			Description: "created_at timestamp is zero",
-			Hint:        "The session creation time is missing. This is a data-integrity problem; delete and recreate the session.",
+			Description: "created_at timestamp is missing or zero",
+			Hint:        "The session creation time is missing. This record is likely corrupt; delete it and start over.",
 		})
 	}
 
@@ -633,8 +690,8 @@ func ValidateIntegrity(data *Data) *IntegrityReport {
 	if data.LastAccessAt.IsZero() {
 		report.Issues = append(report.Issues, IntegrityIssue{
 			Field:       "LastAccessAt",
-			Description: "last_access_at timestamp is zero",
-			Hint:        "The last-access timestamp is missing. Re-saving the session will reset it.",
+			Description: "last_access_at timestamp is missing or zero",
+			Hint:        "The last-access timestamp is missing. Loading and re-saving the session should fix this.",
 		})
 	}
 
@@ -643,8 +700,8 @@ func ValidateIntegrity(data *Data) *IntegrityReport {
 		if data.LastAccessAt.Before(data.CreatedAt) {
 			report.Issues = append(report.Issues, IntegrityIssue{
 				Field:       "LastAccessAt",
-				Description: "last_access_at is before created_at — timestamps are inconsistent",
-				Hint:        "The session timestamps are out of order. Re-saving the session will reset last_access_at to now.",
+				Description: "last_access_at precedes created_at (temporal inconsistency)",
+				Hint:        "The session timestamps are out of order. Re-saving the session will reset the last-access time to now.",
 			})
 		}
 	}
@@ -654,7 +711,7 @@ func ValidateIntegrity(data *Data) *IntegrityReport {
 		report.Issues = append(report.Issues, IntegrityIssue{
 			Field: "SchemaVersion",
 			Description: fmt.Sprintf(
-				"session schema version %d is newer than this build's supported version %d",
+				"session schema version %d is newer than the supported version %d",
 				data.SchemaVersion, SchemaVersion,
 			),
 			Hint: "Upgrade Glassbox to a newer release to open sessions created by a more recent version.",
@@ -666,12 +723,23 @@ func ValidateIntegrity(data *Data) *IntegrityReport {
 		report.Issues = append(report.Issues, IntegrityIssue{
 			Field:       "EnvelopeXdr",
 			Description: "simulation request is present but envelope XDR is missing",
-			Hint:        "The session is partially saved. Re-run 'glassbox debug <tx-hash>' to capture the full session state.",
+			Hint:        "The session state is incomplete. Re-run 'glassbox debug <tx-hash>' to capture the full state.",
 		})
 	}
 
 	report.OK = len(report.Issues) == 0
 	return report
+}
+
+// validateSHA256HexHash verifies that a string is a 64-character hex-encoded SHA-256 hash.
+func validateSHA256HexHash(field, hash string) error {
+	if len(hash) != 64 {
+		return fmt.Errorf("%s must be 64 hex characters, got %d", field, len(hash))
+	}
+	if _, err := hex.DecodeString(hash); err != nil {
+		return fmt.Errorf("%s is not valid hex: %w", field, err)
+	}
+	return nil
 }
 
 // ── Store-level diagnostics ───────────────────────────────────────────────────
