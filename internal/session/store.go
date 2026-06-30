@@ -5,7 +5,9 @@ package session
 
 import (
 	"context"
+	"crypto/ed25519"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -125,7 +127,7 @@ func (s *Store) initSchema() error {
 		GLASSBOX_version TEXT,
 		schema_version INTEGER NOT NULL
 	);
-	
+
 	CREATE INDEX IF NOT EXISTS idx_last_access ON sessions(last_access_at);
 	CREATE INDEX IF NOT EXISTS idx_tx_hash ON sessions(tx_hash);
 	CREATE INDEX IF NOT EXISTS idx_audit_hash ON sessions(audit_hash);
@@ -568,13 +570,26 @@ type IntegrityReport struct {
 //   - Required fields are non-empty (ID, TxHash, Network, Status)
 //   - Status is a known value (active, saved, resumed, recovered, expired)
 //   - CreatedAt and LastAccessAt are non-zero and in valid temporal order
-//   - LastAccessAt is not in the future (within a 1-minute clock-skew tolerance)
 //   - SchemaVersion is compatible with the current SchemaVersion constant
 //   - EnvelopeXdr is non-empty when SimRequestJSON is also non-empty
 //   - AuditHash and PreviousSessionHash are valid SHA-256 hex strings when set
+//   - AuditSignature is a valid hex-encoded Ed25519 signature when set
+//   - Audit chain fields are internally consistent (hash/signature pairing,
+//     predecessor link, and no self-referential chain link)
 //
 // The function never modifies the session; it is safe to call concurrently.
 func ValidateIntegrity(data *Data) *IntegrityReport {
+	if data == nil {
+		return &IntegrityReport{
+			OK: false,
+			Issues: []IntegrityIssue{{
+				Field:       "Session",
+				Description: "session record is nil",
+				Hint:        "Load the session from the store again, or create a fresh one with 'glassbox debug <tx-hash>'.",
+			}},
+		}
+	}
+
 	report := &IntegrityReport{
 		SessionID:           data.ID,
 		SchemaCompatible:    data.SchemaVersion <= SchemaVersion,
@@ -668,12 +683,49 @@ func ValidateIntegrity(data *Data) *IntegrityReport {
 		}
 	}
 
-	// Audit Chain Integrity: AuditSignature requires AuditHash
-	if data.AuditSignature != "" && data.AuditHash == "" {
+	// Audit Chain Integrity: AuditSignature format and pairing requirements
+	if data.AuditSignature != "" {
+		if err := validateEd25519SignatureHex("audit_signature", data.AuditSignature); err != nil {
+			report.Issues = append(report.Issues, IntegrityIssue{
+				Field:       "AuditSignature",
+				Description: fmt.Sprintf("audit_signature is malformed: %v", err),
+				Hint:        "The audit signature must be a 128-character hexadecimal Ed25519 signature.",
+			})
+		}
+		if data.AuditHash == "" {
+			report.Issues = append(report.Issues, IntegrityIssue{
+				Field:       "AuditHash",
+				Description: "audit_signature is present but audit_hash is missing",
+				Hint:        "A signature can only exist if there is a hash to sign. Re-sign the session to fix this.",
+			})
+		}
+	}
+	if data.AuditHash != "" && data.AuditSignature == "" {
+		report.Issues = append(report.Issues, IntegrityIssue{
+			Field:       "AuditSignature",
+			Description: "audit_hash is present but audit_signature is missing",
+			Hint:        "Persisted audit-chain state must sign audit_hash. Re-sign the session before saving it.",
+		})
+	}
+	if data.PreviousSessionHash != "" && data.AuditHash == "" {
 		report.Issues = append(report.Issues, IntegrityIssue{
 			Field:       "AuditHash",
-			Description: "audit_signature is present but audit_hash is missing",
-			Hint:        "A signature can only exist if there is a hash to sign. Re-sign the session to fix this.",
+			Description: "previous_session_hash is present but audit_hash is missing",
+			Hint:        "A chained session needs its own audit_hash to anchor the predecessor link. Populate audit_hash or clear previous_session_hash for a genesis entry.",
+		})
+	}
+	if data.PreviousSessionHash != "" && data.AuditSignature == "" {
+		report.Issues = append(report.Issues, IntegrityIssue{
+			Field:       "AuditSignature",
+			Description: "previous_session_hash is present but audit_signature is missing",
+			Hint:        "A chained session must sign its audit_hash. Populate audit_signature or clear previous_session_hash for a genesis entry.",
+		})
+	}
+	if data.AuditHash != "" && data.PreviousSessionHash != "" && strings.EqualFold(data.AuditHash, data.PreviousSessionHash) {
+		report.Issues = append(report.Issues, IntegrityIssue{
+			Field:       "PreviousSessionHash",
+			Description: "previous_session_hash points to the current session's own audit_hash (self-referential chain link)",
+			Hint:        "Set previous_session_hash to the predecessor session's audit_hash, or leave it empty for the genesis entry.",
 		})
 	}
 
@@ -737,6 +789,18 @@ func validateSHA256HexHash(field, hash string) error {
 		return fmt.Errorf("%s must be 64 hex characters, got %d", field, len(hash))
 	}
 	if _, err := hex.DecodeString(hash); err != nil {
+		return fmt.Errorf("%s is not valid hex: %w", field, err)
+	}
+	return nil
+}
+
+// validateEd25519SignatureHex verifies that sig is a 128-character hex-encoded
+// Ed25519 signature (64 raw bytes).
+func validateEd25519SignatureHex(field, sig string) error {
+	if len(sig) != ed25519.SignatureSize*2 {
+		return fmt.Errorf("%s must be %d hex characters, got %d", field, ed25519.SignatureSize*2, len(sig))
+	}
+	if _, err := hex.DecodeString(sig); err != nil {
 		return fmt.Errorf("%s is not valid hex: %w", field, err)
 	}
 	return nil
