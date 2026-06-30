@@ -30,10 +30,36 @@ type PreflightReport struct {
 	Issues []PreflightIssue
 }
 
+// Summary returns a human-readable description of all issues in the report,
+// suitable for diagnostic output. It returns an empty string when there are no
+// issues. Each issue is formatted as:
+//
+//	[severity] check: description
+//	  Hint: <actionable step>
+func (r *PreflightReport) Summary() string {
+	if len(r.Issues) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for i, issue := range r.Issues {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(fmt.Sprintf("[%s] %s: %s", issue.Severity, issue.Check, issue.Description))
+		if issue.Hint != "" {
+			sb.WriteString("\n  Hint: ")
+			sb.WriteString(issue.Hint)
+		}
+	}
+	return sb.String()
+}
+
 // RunSourceMapPreflight inspects the local environment for conditions that are
 // required (or strongly recommended) for accurate source mapping.
 //
 // Checks performed:
+//   - projectRoot, when non-empty, must not contain null bytes (error if it does)
+//   - projectRoot, when non-empty, exists and is a directory (error if not)
 //   - WASM target directory exists under projectRoot (target/wasm32-unknown-unknown)
 //   - At least one .wasm file is present in the release output directory
 //   - GLASSBOX_SKIP_SOURCE_MAPPING env var is not set to a truthy value
@@ -46,6 +72,39 @@ func RunSourceMapPreflight(projectRoot string) *PreflightReport {
 
 	// ── WASM build artifact checks ────────────────────────────────────────────
 	if projectRoot != "" {
+		// Reject null bytes before any filesystem access.
+		if strings.ContainsRune(projectRoot, 0) {
+			report.Issues = append(report.Issues, PreflightIssue{
+				Check:       "project_root",
+				Severity:    "error",
+				Description: "project root path contains null bytes and cannot be used",
+				Hint:        "Remove null bytes from the project root path.",
+			})
+			report.OK = false
+			return report
+		}
+
+		rootInfo, rootErr := os.Stat(projectRoot)
+		if os.IsNotExist(rootErr) {
+			report.Issues = append(report.Issues, PreflightIssue{
+				Check:       "project_root",
+				Severity:    "error",
+				Description: fmt.Sprintf("project root directory does not exist: %s", projectRoot),
+				Hint:        "Ensure the project root path is correct and the directory has been created.",
+			})
+			report.OK = false
+			return report
+		} else if rootErr == nil && !rootInfo.IsDir() {
+			report.Issues = append(report.Issues, PreflightIssue{
+				Check:       "project_root",
+				Severity:    "error",
+				Description: fmt.Sprintf("%q is not a directory", projectRoot),
+				Hint:        "Provide the path to the contract project root directory, not a file.",
+			})
+			report.OK = false
+			return report
+		}
+
 		wasmTargetDir := filepath.Join(projectRoot, "target", "wasm32-unknown-unknown", "release")
 		if _, err := os.Stat(wasmTargetDir); os.IsNotExist(err) {
 			report.Issues = append(report.Issues, PreflightIssue{
@@ -84,7 +143,14 @@ func RunSourceMapPreflight(projectRoot string) *PreflightReport {
 
 	// ── GLASSBOX_SOURCE_MAP_CACHE ─────────────────────────────────────────────
 	if cacheDir := os.Getenv("GLASSBOX_SOURCE_MAP_CACHE"); cacheDir != "" {
-		if err := validateCacheDir(cacheDir); err != nil {
+		if strings.ContainsRune(cacheDir, 0) {
+			report.Issues = append(report.Issues, PreflightIssue{
+				Check:       "source_map_cache_dir",
+				Severity:    "error",
+				Description: fmt.Sprintf("GLASSBOX_SOURCE_MAP_CACHE=%q contains null bytes and cannot be used", cacheDir),
+				Hint:        "Unset GLASSBOX_SOURCE_MAP_CACHE or set it to a valid directory path without null bytes.",
+			})
+		} else if err := validateCacheDir(cacheDir); err != nil {
 			report.Issues = append(report.Issues, PreflightIssue{
 				Check:       "source_map_cache_dir",
 				Severity:    "error",

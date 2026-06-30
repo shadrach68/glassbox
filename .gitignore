@@ -81,6 +81,16 @@ PR_279_trace_export_audit_chain_integrity.md
 PR_280_trace_export_schema_stability.md
 PR_281_trace_export_path_normalization_safety.md
 PR_278_hsm_signing_pkcs11_validation.md
+PR_283_improve_trace_export_reporting_summaries.md
+PR_284_improve_trace_export_regression_mock_harness.md
+PR_282_improve_trace_export_versioning_metadata.md
+PR_273_improve_trace_export_build_artifact_discovery.md
+
+# --- Kiro IDE workspace files ---
+.kiro/
+
+# --- Issue PR notes ---
+PR_270_improve_trace_export_session_recovery_integrity.md
 commit_309*.next
 *.py
 !emojis.py
@@ -89,6 +99,10 @@ commit_309*.next
 !package-lock.json
 !tsconfig*.json
 !perf_baseline.json
+
+# --- Issue PR notes (local only) ---
+PR_270_improve_trace_export_session_recovery_integrity.md
+PR_271_improve_trace_export_source_discovery_fallback.md
 
 .gocache
 

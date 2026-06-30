@@ -636,6 +636,131 @@ This correctly:
 
 ---
 
+## Snapshot Reliability Validation
+
+Before exporting traces that depend on snapshot data (sandboxed replay, step
+navigation), Glassbox validates snapshot coverage using
+`ValidateSnapshotForExport`. This surfaces snapshot problems early — before
+the expensive export operation begins — so users get a clear, actionable error
+rather than a partial or silently broken export.
+
+### Validation checks
+
+| Condition | Error produced |
+|-----------|---------------|
+| Simulation hit an OOM condition | Snapshot capture failed due to memory pressure |
+| Steps executed but zero snapshots captured | No snapshots were captured |
+| Snapshot count far below expected coverage | Sparse snapshot coverage warning |
+
+### OOM error
+
+```
+snapshot capture failed due to memory pressure (OOM) — trace export may be incomplete
+  The simulation ran out of memory before all snapshots could be saved.
+  Fix: re-run with a smaller transaction or increase the simulator memory limit
+  Tip: use --trace-verbosity summary to reduce memory usage during capture
+```
+
+### No snapshots captured
+
+```
+no snapshots were captured during simulation (250 steps executed, 0 snapshots) —
+sandboxed replay and step-navigation will be unavailable
+  Possible causes:
+    - Snapshot interval is set too high (no step hit the interval)
+    - Simulator version does not support snapshot capture
+  Fix: lower --snapshot-interval or re-run with a simulator that supports snapshots
+  Tip: run 'glassbox doctor' to check simulator snapshot support
+```
+
+### Sparse snapshot coverage
+
+```
+sparse snapshot coverage: 2 snapshot(s) for 1000 steps (expected at least 5) —
+step-navigation may jump large gaps
+  Fix: lower --snapshot-interval to capture more frequent snapshots
+  Current coverage: 1 snapshot per ~500 steps
+```
+
+### Coverage threshold
+
+The validator expects at minimum **1 snapshot per 200 steps**. This matches the
+default snapshot interval. If you use a higher `--snapshot-interval`, the sparse
+coverage warning may trigger for long-running transactions — lower the interval
+or acknowledge the reduced navigation granularity.
+
+---
+
+---
+
+## Export Integrity Verification (`VerifyExport`)
+
+When a trace is exported with resilience options enabled (`ExportWithResilience`), a companion `.meta.json` file is written alongside the trace. This file records:
+
+- `version` — the schema version of the export envelope
+- `format` — the export format (`html`, `json`, `markdown`, `text`)
+- `transaction_hash` — the transaction the trace belongs to
+- `exported_at` — wall-clock time of the export
+- `step_count` — number of execution steps in the trace at export time
+- `checksum` — SHA-256 hex digest of the trace file content
+- `cli_version` — Glassbox CLI version that produced the export
+- `hostname` — machine that produced the export (omitted if unavailable)
+
+### Verifying an export
+
+Use `VerifyExport(tracePath)` (or the equivalent API call) to verify a previously exported trace:
+
+```go
+if err := trace.VerifyExport("./output/trace.json"); err != nil {
+    fmt.Fprintf(os.Stderr, "Trace integrity check failed: %v\n", err)
+}
+```
+
+**Checks performed:**
+
+| Check | Error produced |
+|-------|----------------|
+| Metadata file missing | Descriptive note that the file can still be used but integrity cannot be verified |
+| Metadata file corrupt | `failed to parse metadata file` with corruption hint |
+| Checksum mismatch | `checksum mismatch` with expected/actual values and re-export hint |
+| Step count mismatch (JSON only) | `step count mismatch` with recorded vs actual count and truncation hint |
+| Format/extension mismatch | `format mismatch` with re-export hint |
+
+**Step count mismatch error example:**
+
+```
+step count mismatch
+  Metadata records 50 steps, trace file contains 12 steps
+  The trace file may have been truncated, appended to, or partially overwritten
+  Fix: re-export the trace with glassbox debug --trace-output
+```
+
+### Recovering a trace (`RecoverTrace`)
+
+`RecoverTrace(tracePath)` performs best-effort recovery of a JSON trace export that may be partially corrupted or have mismatched metadata. It:
+
+1. **Runs `VerifyExport` first** — surfaces any checksum or step-count mismatch as a warning before attempting content recovery. Missing metadata is silently accepted.
+2. **Parses the JSON** with progressive tolerance (strict → lenient → unknown-fields allowed).
+3. **Sanitizes** the recovered trace — fixes zero timestamps, step index mismatches, missing transaction hashes, and truncates excessively long error strings.
+4. **Validates** the sanitized trace for structural correctness.
+
+All warnings and repairs are returned as a slice of errors alongside the recovered trace object, so callers can surface the information at the appropriate severity level.
+
+```go
+recovered, warnings := trace.RecoverTrace("./corrupted/trace.json")
+if recovered == nil {
+    log.Fatalf("unrecoverable: %v", warnings)
+}
+for _, w := range warnings {
+    fmt.Fprintf(os.Stderr, "Warning: %v\n", w)
+}
+// use recovered trace...
+```
+
+**Only JSON format exports can be recovered.** HTML, Markdown, and Text are presentation-only formats and cannot be parsed back to an `ExecutionTrace`. Always export in JSON format when recovery capability is required.
+
+---
+
 ## See Also
 
 - [Debug Command Reference](./debug-command.md)
@@ -643,3 +768,5 @@ This correctly:
 - [Trace Profiling and Performance](./trace-profiling.md)
 - [Event Schemas](./event-schemas.md)
 - [JSON Output Format](./json-output.md)
+- [Snapshot Deduplication](./snapshot-deduplication.md)
+- [Sandboxed Replay](./sandboxed-replay.md)
