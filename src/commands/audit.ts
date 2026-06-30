@@ -55,66 +55,31 @@ export function registerAuditCommands(program: Command): void {
       "--dry-run",
       "Validate payload parsing, canonicalization, and provider connectivity without signing",
     )
-    .action(
-      async (opts: {
-        payload: string;
-        hsmProvider?: string;
-        softwarePrivateKey?: string;
-        kmsKeyId?: string;
-        kmsSigningAlgorithm?: string;
-        dryRun?: boolean;
-      }) => {
-        let signer: ReturnType<typeof createAuditSigner> | undefined;
-
+    .action(async (opts: {
+      payload: string;
+      hsmProvider?: string;
+      softwarePrivateKey?: string;
+      kmsKeyId?: string;
+      kmsSigningAlgorithm?: string;
+      dryRun?: boolean;
+    }) => {
+      try {
+        let trace;
         try {
-          const trace = JSON.parse(opts.payload);
+          trace = JSON.parse(opts.payload);
+        } catch (_jsonErr) {
+          console.error('[FAIL] audit signing failed: --payload is not valid JSON.');
+          console.error('       Ensure the value is a valid JSON string, e.g.:');
+          console.error('         --payload (JSON with input, state, events, timestamp fields)');
+          process.exit(1);
+        }
 
-          signer = createAuditSigner({
-            hsmProvider: opts.hsmProvider,
-            softwarePrivateKeyPem:
-              opts.softwarePrivateKey ??
-              process.env.GLASSBOX_AUDIT_PRIVATE_KEY_PEM,
-            kmsKeyId: opts.kmsKeyId,
-            kmsSigningAlgorithm: opts.kmsSigningAlgorithm,
-          });
-
-          const providerLabel = opts.hsmProvider ?? "software";
-
-          if (opts.dryRun) {
-            let attestation: unknown;
-            if (typeof signer.attestation_chain === "function") {
-              attestation = await signer.attestation_chain();
-            }
-
-            const hashInput = attestation
-              ? { trace, hardware_attestation: attestation }
-              : { trace };
-            const canonicalString = stringify(hashInput);
-            const hash = createHash("sha256")
-              .update(canonicalString)
-              .digest("hex");
-            const publicKey = await signer.public_key();
-
-            process.stdout.write(
-              JSON.stringify(
-                {
-                  dry_run: true,
-                  signer_provider: providerLabel,
-                  checks: {
-                    payload_parsed: true,
-                    canonicalized: true,
-                    signer_connected: true,
-                  },
-                  canonical_hash: hash,
-                  public_key_available: Boolean(publicKey),
-                  attestation_present: Boolean(attestation),
-                },
-                null,
-                2,
-              ) + "\n",
-            );
-            return;
-          }
+        const signer = createAuditSigner({
+          hsmProvider: opts.hsmProvider,
+          softwarePrivateKeyPem: opts.softwarePrivateKey ?? process.env.GLASSBOX_AUDIT_PRIVATE_KEY_PEM,
+          kmsKeyId: opts.kmsKeyId,
+          kmsSigningAlgorithm: opts.kmsSigningAlgorithm,
+        });
 
           const logger = new AuditLogger(signer, providerLabel);
           const log = await logger.generateLog(trace);
@@ -138,8 +103,26 @@ export function registerAuditCommands(program: Command): void {
             }
           }
         }
-      },
-    );
+
+        const logger = new AuditLogger(signer, providerLabel);
+        const log = await logger.generateLog(trace);
+
+        // Print to stdout so callers can redirect to a file
+        process.stdout.write(JSON.stringify(log, null, 2) + '\n');
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[FAIL] audit signing failed: ${msg}`);
+        if (msg.includes('schema validation failed')) {
+          console.error('       Fix the payload fields listed above and retry.');
+          console.error('       Required fields: timestamp (ISO 8601), input (object), state (object), events (array).');
+        } else if (msg.includes('private key') || msg.includes('GLASSBOX_AUDIT_PRIVATE_KEY_PEM')) {
+          console.error('       Set the GLASSBOX_AUDIT_PRIVATE_KEY_PEM environment variable or pass --software-private-key.');
+        } else if (msg.includes('KMS') || msg.includes('kms')) {
+          console.error('       Check GLASSBOX_KMS_KEY_ID and AWS_REGION environment variables.');
+        }
+        process.exit(1);
+      }
+    });
 
   program
     .command("audit:render")

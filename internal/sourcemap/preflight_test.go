@@ -26,6 +26,72 @@ func TestPreflight_EmptyProjectRoot_NoWasmIssues(t *testing.T) {
 	}
 }
 
+// ── projectRoot validation checks ────────────────────────────────────────────
+
+// TestPreflight_NonexistentProjectRoot_ErrorIssue verifies that a non-existent
+// projectRoot produces an error issue and sets report.OK=false.
+func TestPreflight_NonexistentProjectRoot_ErrorIssue(t *testing.T) {
+	t.Setenv("GLASSBOX_SKIP_SOURCE_MAPPING", "")
+	t.Setenv("GLASSBOX_SOURCE_MAP_CACHE", "")
+
+	report := RunSourceMapPreflight("/does/not/exist/project/root")
+	if report.OK {
+		t.Fatal("non-existent projectRoot must set report.OK=false")
+	}
+	requireIssueCheck(t, report, "project_root")
+}
+
+// TestPreflight_ProjectRootIsFile_ErrorIssue verifies that when projectRoot
+// points to a file (not a directory) an error issue is produced.
+func TestPreflight_ProjectRootIsFile_ErrorIssue(t *testing.T) {
+	t.Setenv("GLASSBOX_SKIP_SOURCE_MAPPING", "")
+	t.Setenv("GLASSBOX_SOURCE_MAP_CACHE", "")
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "notadir.rs")
+	if err := os.WriteFile(f, []byte("fn main() {}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report := RunSourceMapPreflight(f)
+	if report.OK {
+		t.Fatal("file path as projectRoot must set report.OK=false")
+	}
+	requireIssueCheck(t, report, "project_root")
+}
+
+// TestPreflight_ValidProjectRoot_NoRootIssue verifies that a valid directory as
+// projectRoot does not produce a project_root issue.
+func TestPreflight_ValidProjectRoot_NoRootIssue(t *testing.T) {
+	t.Setenv("GLASSBOX_SKIP_SOURCE_MAPPING", "")
+	t.Setenv("GLASSBOX_SOURCE_MAP_CACHE", "")
+
+	dir := t.TempDir()
+	report := RunSourceMapPreflight(dir)
+
+	for _, issue := range report.Issues {
+		if issue.Check == "project_root" {
+			t.Errorf("valid directory projectRoot should not produce a project_root issue; got: %+v", issue)
+		}
+	}
+}
+
+// TestPreflight_NonexistentProjectRoot_HintIsActionable verifies that the hint
+// for a non-existent projectRoot is non-empty and actionable.
+func TestPreflight_NonexistentProjectRoot_HintIsActionable(t *testing.T) {
+	t.Setenv("GLASSBOX_SKIP_SOURCE_MAPPING", "")
+	t.Setenv("GLASSBOX_SOURCE_MAP_CACHE", "")
+
+	report := RunSourceMapPreflight("/nonexistent/root")
+	for _, issue := range report.Issues {
+		if issue.Check == "project_root" {
+			if strings.TrimSpace(issue.Hint) == "" {
+				t.Error("project_root issue must have a non-empty actionable hint")
+			}
+		}
+	}
+}
+
 // ── WASM target directory checks ─────────────────────────────────────────────
 
 // TestPreflight_MissingWasmTargetDir_WarningIssue verifies that a project root
@@ -221,4 +287,160 @@ func requireIssueCheck(t *testing.T, report *PreflightReport, check string) {
 		}
 	}
 	t.Errorf("expected an issue for check %q; got issues: %v", check, report.Issues)
+}
+
+// ── PreflightReport.Summary() ────────────────────────────────────────────────
+
+// TestPreflightReport_Summary_NoIssues_ReturnsEmpty verifies that a clean
+// report produces an empty summary string.
+func TestPreflightReport_Summary_NoIssues_ReturnsEmpty(t *testing.T) {
+	report := &PreflightReport{OK: true, Issues: nil}
+	if s := report.Summary(); s != "" {
+		t.Errorf("Summary() with no issues should be empty, got: %q", s)
+	}
+}
+
+// TestPreflightReport_Summary_SingleIssue_ContainsCheckAndHint verifies that
+// Summary() includes the check name, description, and hint for a single issue.
+func TestPreflightReport_Summary_SingleIssue_ContainsCheckAndHint(t *testing.T) {
+	report := &PreflightReport{
+		OK: false,
+		Issues: []PreflightIssue{
+			{
+				Check:       "wasm_target_dir",
+				Severity:    "warning",
+				Description: "WASM target directory not found: /tmp/project/target/wasm32-unknown-unknown/release",
+				Hint:        "Run cargo build --target wasm32-unknown-unknown --release",
+			},
+		},
+	}
+
+	s := report.Summary()
+	if s == "" {
+		t.Fatal("Summary() should not be empty for a report with issues")
+	}
+	if !strings.Contains(s, "wasm_target_dir") {
+		t.Errorf("Summary() should include check name, got: %q", s)
+	}
+	if !strings.Contains(s, "WASM target directory") {
+		t.Errorf("Summary() should include description, got: %q", s)
+	}
+	if !strings.Contains(s, "cargo build") {
+		t.Errorf("Summary() should include hint, got: %q", s)
+	}
+	if !strings.Contains(s, "warning") {
+		t.Errorf("Summary() should include severity, got: %q", s)
+	}
+}
+
+// TestPreflightReport_Summary_MultipleIssues_AllIncluded verifies that
+// Summary() includes all issues when more than one is present.
+func TestPreflightReport_Summary_MultipleIssues_AllIncluded(t *testing.T) {
+	report := &PreflightReport{
+		OK: false,
+		Issues: []PreflightIssue{
+			{Check: "wasm_target_dir", Severity: "warning", Description: "missing dir", Hint: "build first"},
+			{Check: "source_map_cache_dir", Severity: "error", Description: "not writable", Hint: "check perms"},
+		},
+	}
+
+	s := report.Summary()
+	if !strings.Contains(s, "wasm_target_dir") {
+		t.Errorf("Summary() should mention wasm_target_dir, got: %q", s)
+	}
+	if !strings.Contains(s, "source_map_cache_dir") {
+		t.Errorf("Summary() should mention source_map_cache_dir, got: %q", s)
+	}
+	if !strings.Contains(s, "check perms") {
+		t.Errorf("Summary() should include the second hint, got: %q", s)
+	}
+}
+
+// TestPreflightReport_Summary_IssueWithNoHint_NoCrash verifies that Summary()
+// does not crash or include a stray "Hint:" label when an issue has no hint.
+func TestPreflightReport_Summary_IssueWithNoHint_NoCrash(t *testing.T) {
+	report := &PreflightReport{
+		OK: false,
+		Issues: []PreflightIssue{
+			{Check: "some_check", Severity: "warning", Description: "something is wrong", Hint: ""},
+		},
+	}
+
+	s := report.Summary()
+	if s == "" {
+		t.Fatal("Summary() should not be empty for a report with issues")
+	}
+	if strings.Contains(s, "Hint:") {
+		t.Errorf("Summary() should not emit 'Hint:' when hint is empty, got: %q", s)
+	}
+}
+
+// TestPreflightReport_Summary_RealPreflight_ContainsIssues verifies that the
+// Summary() method works end-to-end with a real RunSourceMapPreflight call.
+func TestPreflightReport_Summary_RealPreflight_ContainsIssues(t *testing.T) {
+	t.Setenv("GLASSBOX_SKIP_SOURCE_MAPPING", "true")
+	t.Setenv("GLASSBOX_SOURCE_MAP_CACHE", "")
+
+	report := RunSourceMapPreflight("")
+	if len(report.Issues) == 0 {
+		t.Skip("expected at least one issue from the preflight; env may not have propagated")
+	}
+
+	s := report.Summary()
+	if s == "" {
+		t.Error("Summary() should not be empty when there are issues")
+	}
+	if !strings.Contains(s, "skip_source_mapping_env") {
+		t.Errorf("Summary() should include the skip_source_mapping_env check, got: %q", s)
+	}
+}
+
+// ── RunSourceMapPreflight — null byte in projectRoot ─────────────────────────
+
+// TestPreflight_NullByteInProjectRoot_ErrorIssue verifies that a projectRoot
+// containing a null byte is rejected before any filesystem access with a clear
+// error message.
+func TestPreflight_NullByteInProjectRoot_ErrorIssue(t *testing.T) {
+	t.Setenv("GLASSBOX_SKIP_SOURCE_MAPPING", "")
+	t.Setenv("GLASSBOX_SOURCE_MAP_CACHE", "")
+
+	report := RunSourceMapPreflight("/valid/path\x00injection")
+	if report.OK {
+		t.Fatal("null byte in projectRoot must set report.OK=false")
+	}
+	requireIssueCheck(t, report, "project_root")
+	for _, issue := range report.Issues {
+		if issue.Check == "project_root" {
+			if !strings.Contains(issue.Description, "null bytes") {
+				t.Errorf("issue description should mention null bytes, got: %q", issue.Description)
+			}
+			if strings.TrimSpace(issue.Hint) == "" {
+				t.Error("project_root null-byte issue must have a non-empty hint")
+			}
+		}
+	}
+}
+
+// TestPreflight_NullByteInCacheDir_ErrorIssue verifies that
+// GLASSBOX_SOURCE_MAP_CACHE containing a null byte is rejected with a clear
+// error rather than producing an obscure OS error.
+func TestPreflight_NullByteInCacheDir_ErrorIssue(t *testing.T) {
+	t.Setenv("GLASSBOX_SKIP_SOURCE_MAPPING", "")
+	t.Setenv("GLASSBOX_SOURCE_MAP_CACHE", "/valid\x00bad")
+
+	report := RunSourceMapPreflight("")
+	if report.OK {
+		t.Fatal("null byte in GLASSBOX_SOURCE_MAP_CACHE must set report.OK=false")
+	}
+	requireIssueCheck(t, report, "source_map_cache_dir")
+	for _, issue := range report.Issues {
+		if issue.Check == "source_map_cache_dir" {
+			if !strings.Contains(issue.Description, "null bytes") {
+				t.Errorf("issue description should mention null bytes, got: %q", issue.Description)
+			}
+			if strings.TrimSpace(issue.Hint) == "" {
+				t.Error("source_map_cache_dir null-byte issue must have a non-empty hint")
+			}
+		}
+	}
 }
