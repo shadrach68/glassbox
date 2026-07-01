@@ -298,6 +298,21 @@ Exit codes:
 			debugArgs = append(debugArgs, "--view", parsed.View)
 		}
 
+		// Forward protocol version override when present.
+		if parsed.ProtocolVersion != nil {
+			debugArgs = append(debugArgs, "--protocol-version", fmt.Sprintf("%d", *parsed.ProtocolVersion))
+		}
+
+		// Forward mock ledger manifest when present.
+		if parsed.MockLedgerManifest != "" {
+			debugArgs = append(debugArgs, "--mock-ledger-manifest", parsed.MockLedgerManifest)
+		}
+
+		// Forward mock ledger entries when present.
+		for _, entry := range parsed.MockLedgerEntries {
+			debugArgs = append(debugArgs, "--mock-ledger-entry", entry)
+		}
+
 		child := exec.CommandContext(cmd.Context(), executablePath, debugArgs...)
 		child.Stdout = cmd.OutOrStdout()
 		child.Stderr = cmd.ErrOrStderr()
