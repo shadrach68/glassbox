@@ -115,6 +115,9 @@ Optional:
 
 - `GLASSBOX_PKCS11_SLOT` — numeric slot index (default `0`)
 - `GLASSBOX_PKCS11_TOKEN_LABEL` — select token by label
+- `GLASSBOX_PKCS11_PUBLIC_KEY_PEM` — SPKI PEM public key returned in the signed audit log
+
+The Node.js PKCS#11 signer now keeps the module, session, and key lookup alive for the lifetime of the signer instance. If a cached session goes stale (for example after token removal or middleware reset), Glassbox clears it and retries once before returning an actionable error.
 
 Example:
 

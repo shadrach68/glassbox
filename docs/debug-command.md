@@ -616,6 +616,11 @@ To re-debug:   glassbox debug  --network testnet
 | `LastAccessAt` | Non-zero and not before `CreatedAt` |
 | `SchemaVersion` | ≤ current `SchemaVersion` constant |
 | `EnvelopeXdr` | Non-empty when `SimRequestJSON` is set |
+| `AuditHash` | 64-character SHA-256 hex string when set; required when `AuditSignature` or `PreviousSessionHash` is set |
+| `AuditSignature` | 128-character hex-encoded Ed25519 signature when set; required when `AuditHash` or `PreviousSessionHash` is set |
+| `PreviousSessionHash` | 64-character SHA-256 hex string when set; must differ from `AuditHash` |
+
+`glassbox session save` now runs the same integrity validation before writing to the session store. That means malformed audit-chain fields such as a missing `AuditSignature`, a bad `PreviousSessionHash`, or a self-referential chain link are rejected immediately with field-specific hints instead of being persisted and only discovered later during resume or recovery.
 
 ### `session save` — `--pin-endpoint`
 
